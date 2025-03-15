@@ -21,15 +21,18 @@
   "homepage": "https://github.com/unnipv/musync#readme",
   "description": "Cross-platform playlist management application that synchronizes music playlists across multiple streaming services",
   "dependencies": {
+    "bcrypt": "^5.1.0",
     "bcryptjs": "^2.4.3",
     "mongodb": "^5.7.0",
+    "mongoose": "^7.4.0",
     "next": "13.4.12",
     "next-auth": "^4.22.3",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "5.1.6"
   },
   "devDependencies": {
+    "@types/bcrypt": "^5.0.0",
     "@types/bcryptjs": "^2.4.2",
     "@types/node": "20.4.5",
     "@types/react": "18.2.17",
