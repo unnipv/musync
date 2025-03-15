@@ -8,6 +8,9 @@ export interface IPlaylist extends Document {
   name: string;
   description?: string;
   isPublic: boolean;
+  spotifyId?: string;
+  youtubeId?: string;
+  lastSyncedAt?: Date;
   tracks: Array<{
     _id: mongoose.Types.ObjectId;
     title: string;
@@ -46,6 +49,17 @@ const PlaylistSchema: Schema = new Schema(
     isPublic: {
       type: Boolean,
       default: false,
+    },
+    spotifyId: {
+      type: String,
+      index: true,
+    },
+    youtubeId: {
+      type: String,
+      index: true,
+    },
+    lastSyncedAt: {
+      type: Date,
     },
     tracks: [
       {

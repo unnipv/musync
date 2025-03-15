@@ -16,9 +16,9 @@ declare module 'next-auth' {
       email?: string | null;
       /** The user's image */
       image?: string | null;
-      /** Spotify access token */
+      /** The user's Spotify access token */
       spotifyAccessToken?: string;
-      /** Google access token */
+      /** The user's Google access token */
       googleAccessToken?: string;
     } & DefaultSession["user"];
     /** The access token */
@@ -37,6 +37,10 @@ declare module 'next-auth' {
     name?: string | null;
     email?: string | null;
     image?: string | null;
+    /** The user's Spotify access token */
+    spotifyAccessToken?: string;
+    /** The user's Google access token */
+    googleAccessToken?: string;
   }
 
   interface Profile {
@@ -59,5 +63,17 @@ declare module 'next-auth/jwt' {
     provider?: string;
     userId?: string;
     id?: string;
+    /** The user's Spotify access token */
+    spotifyAccessToken?: string;
+    /** The user's Spotify refresh token */
+    spotifyRefreshToken?: string;
+    /** The user's Spotify token expiry time */
+    spotifyTokenExpires?: number;
+    /** The user's Google access token */
+    googleAccessToken?: string;
+    /** The user's Google refresh token */
+    googleRefreshToken?: string;
+    /** The user's Google token expiry time */
+    googleTokenExpires?: number;
   }
 } 

@@ -2,6 +2,7 @@ import { google, youtube_v3 } from 'googleapis';
 import User from '../models/user';
 import Playlist from '../models/playlist';
 import { ObjectId } from 'mongodb';
+import { ITrack, YouTubeTrack, convertYouTubeTrack } from '@/types/track';
 
 /**
  * YouTube Music service for interacting with the YouTube Data API

@@ -34,6 +34,7 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [removingTrackId, setRemovingTrackId] = useState<string | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
   
   /**
    * Formats a duration in seconds to a string in the format MM:SS
@@ -42,6 +43,7 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
    * @returns A formatted duration string
    */
   const formatDuration = (seconds: number) => {
+    if (!seconds) return '0:00';
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = Math.floor(seconds % 60);
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
@@ -54,20 +56,65 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
    */
   const handleRemoveTrack = async (trackId: string) => {
     if (removingTrackId === trackId) {
+      setIsRemoving(true);
+      setError(null);
+      
       try {
-        const response = await fetch(`/api/playlists/${playlistId}/tracks/${trackId}`, {
+        console.log('Removing track with ID:', trackId);
+        
+        // Make sure trackId is a string
+        const trackIdString = String(trackId);
+        
+        // Use the track ID directly in the URL path instead of as a query parameter
+        const response = await fetch(`/api/playlists/${playlistId}/tracks/${trackIdString}`, {
           method: 'DELETE',
+          headers: {
+            'Accept': 'application/json'
+          }
         });
         
+        console.log('Response status:', response.status);
+        
+        // Check if the response is ok before trying to parse JSON
         if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.message || 'Failed to remove track');
+          let errorMessage = `Failed to remove track (${response.status})`;
+          const responseText = await response.text();
+          console.log('Error response text:', responseText);
+          
+          try {
+            if (responseText) {
+              const data = JSON.parse(responseText);
+              errorMessage = data.error || data.message || errorMessage;
+            }
+          } catch (parseError) {
+            console.error('Error parsing error response:', parseError);
+          }
+          
+          throw new Error(errorMessage);
         }
         
-        router.refresh();
+        // Parse the successful response
+        try {
+          const responseText = await response.text();
+          console.log('Success response text:', responseText);
+          
+          if (responseText) {
+            const data = JSON.parse(responseText);
+            console.log('Track removed successfully:', data);
+          }
+          
+          // Refresh the page to show updated playlist
+          router.refresh();
+        } catch (parseError) {
+          console.error('Error parsing success response:', parseError);
+          // Even if we can't parse the response, if the status was OK, consider it a success
+          router.refresh();
+        }
       } catch (err) {
-        setError((err as Error).message);
+        console.error('Error removing track:', err);
+        setError(err instanceof Error ? err.message : 'Unknown error occurred');
       } finally {
+        setIsRemoving(false);
         setRemovingTrackId(null);
       }
     } else {
@@ -92,10 +139,10 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
   
   if (tracks.length === 0) {
     return (
-      <div className="text-center py-12">
-        <p className="font-retro text-xl mb-4">No tracks in this playlist</p>
+      <div className="text-center py-12 text-green-400">
+        <p className="text-xl mb-4">No tracks in this playlist</p>
         {isOwner && (
-          <p className="font-retro">
+          <p>
             Import tracks from Spotify or YouTube to get started.
           </p>
         )}
@@ -106,23 +153,23 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
   return (
     <div>
       {error && (
-        <div className="bg-red-500 text-white p-4 rounded font-retro mb-4">
-          {error}
+        <div className="p-4 border border-red-500 bg-black text-red-500 rounded mb-4">
+          <p>{error}</p>
         </div>
       )}
       
       <div className="overflow-x-auto">
         <table className="w-full border-collapse">
           <thead>
-            <tr className="border-b border-phosphor">
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">#</th>
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">TITLE</th>
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">ARTIST</th>
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">ALBUM</th>
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">DURATION</th>
-              <th className="px-4 py-2 text-left font-pixel phosphor-text">SOURCE</th>
+            <tr className="border-b border-green-500">
+              <th className="px-4 py-2 text-left font-bold text-green-400">#</th>
+              <th className="px-4 py-2 text-left font-bold text-green-400">TITLE</th>
+              <th className="px-4 py-2 text-left font-bold text-green-400">ARTIST</th>
+              <th className="px-4 py-2 text-left font-bold text-green-400">ALBUM</th>
+              <th className="px-4 py-2 text-left font-bold text-green-400">DURATION</th>
+              <th className="px-4 py-2 text-left font-bold text-green-400">SOURCE</th>
               {isOwner && (
-                <th className="px-4 py-2 text-left font-pixel phosphor-text">ACTIONS</th>
+                <th className="px-4 py-2 text-left font-bold text-green-400">ACTIONS</th>
               )}
             </tr>
           </thead>
@@ -130,20 +177,20 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
             {tracks.map((track, index) => (
               <tr 
                 key={track._id} 
-                className="border-b border-phosphor hover:bg-phosphor-dark/20 transition-colors cursor-pointer"
+                className="border-b border-green-500/30 hover:bg-green-900/20 transition-colors cursor-pointer"
                 onClick={() => handlePlayTrack(track)}
               >
-                <td className="px-4 py-2 font-retro">{index + 1}</td>
-                <td className="px-4 py-2 font-retro">{track.title}</td>
-                <td className="px-4 py-2 font-retro">{track.artist}</td>
-                <td className="px-4 py-2 font-retro">{track.album || '-'}</td>
-                <td className="px-4 py-2 font-retro">{formatDuration(track.duration)}</td>
-                <td className="px-4 py-2 font-retro">
+                <td className="px-4 py-2 text-green-300">{index + 1}</td>
+                <td className="px-4 py-2 text-green-300">{track.title}</td>
+                <td className="px-4 py-2 text-green-300">{track.artist}</td>
+                <td className="px-4 py-2 text-green-300">{track.album || '-'}</td>
+                <td className="px-4 py-2 text-green-300">{formatDuration(track.duration)}</td>
+                <td className="px-4 py-2">
                   <div className="flex space-x-1">
                     {track.platformData && track.platformData.map((platform: {provider: string; id: string; url: string}) => (
                       <span 
                         key={platform.provider} 
-                        className="px-2 py-1 bg-phosphor-dark text-phosphor text-xs font-retro"
+                        className="px-2 py-1 bg-green-900/50 text-green-400 text-xs"
                       >
                         {platform.provider.toUpperCase()}
                       </span>
@@ -151,19 +198,29 @@ export default function TrackList({ tracks, playlistId, isOwner }: TrackListProp
                   </div>
                 </td>
                 {isOwner && (
-                  <td className="px-4 py-2 font-retro">
+                  <td className="px-4 py-2">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         handleRemoveTrack(track._id);
                       }}
+                      disabled={isRemoving}
                       className={`px-2 py-1 ${
                         removingTrackId === track._id 
-                          ? 'bg-red-500 text-white' 
-                          : 'bg-phosphor-dark text-phosphor'
-                      } text-xs font-retro`}
+                          ? 'border border-red-500 text-red-400' 
+                          : 'border border-green-500 text-green-400'
+                      } text-xs hover:bg-green-900/30 transition-colors`}
                     >
-                      {removingTrackId === track._id ? 'CONFIRM' : 'REMOVE'}
+                      {isRemoving && removingTrackId === track._id ? (
+                        <span className="flex items-center">
+                          <span className="animate-pulse mr-1">■</span>
+                          REMOVING...
+                        </span>
+                      ) : removingTrackId === track._id ? (
+                        'CONFIRM'
+                      ) : (
+                        'REMOVE'
+                      )}
                     </button>
                   </td>
                 )}

@@ -2,6 +2,7 @@ import SpotifyWebApi from 'spotify-web-api-node';
 import User from '../models/user';
 import Playlist from '../models/playlist';
 import { ObjectId } from 'mongodb';
+import { ITrack, SpotifyTrack, convertSpotifyTrack } from '@/types/track';
 
 /**
  * Spotify service for interacting with the Spotify API
@@ -426,4 +427,279 @@ export class SpotifyService {
   }
 }
 
-export default SpotifyService; 
+export default SpotifyService;
+
+/**
+ * Creates a Spotify API client with the provided access token
+ * 
+ * @param accessToken - OAuth access token for Spotify API
+ * @returns Configured Spotify API client
+ */
+function createSpotifyClient(accessToken: string): SpotifyWebApi {
+  const spotifyApi = new SpotifyWebApi();
+  spotifyApi.setAccessToken(accessToken);
+  return spotifyApi;
+}
+
+/**
+ * Fetches a playlist from Spotify
+ * 
+ * @param playlistId - Spotify playlist ID
+ * @param accessToken - OAuth access token
+ * @returns Playlist data with tracks
+ */
+export async function getPlaylist(playlistId: string, accessToken: string) {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    
+    // Get playlist details
+    const playlistResponse = await spotify.getPlaylist(playlistId);
+    const playlistData = playlistResponse.body;
+    
+    // Get all tracks (handle pagination)
+    const tracks: SpotifyTrack[] = [];
+    let offset = 0;
+    const limit = 100;
+    let total = playlistData.tracks.total;
+    
+    while (offset < total) {
+      const tracksResponse = await spotify.getPlaylistTracks(playlistId, {
+        offset,
+        limit,
+        fields: 'items(track(id,name,artists,album,duration_ms,uri))'
+      });
+      
+      const trackItems = tracksResponse.body.items;
+      
+      for (const item of trackItems) {
+        if (item.track) {
+          tracks.push({
+            id: item.track.id,
+            name: item.track.name,
+            artists: item.track.artists.map(artist => ({
+              id: artist.id,
+              name: artist.name
+            })),
+            album: item.track.album ? {
+              id: item.track.album.id,
+              name: item.track.album.name,
+              images: item.track.album.images
+            } : undefined,
+            duration_ms: item.track.duration_ms,
+            uri: item.track.uri
+          });
+        }
+      }
+      
+      offset += limit;
+    }
+    
+    return {
+      id: playlistData.id,
+      name: playlistData.name,
+      description: playlistData.description,
+      tracks
+    };
+  } catch (error) {
+    console.error('Error fetching Spotify playlist:', error);
+    throw new Error('Failed to fetch Spotify playlist');
+  }
+}
+
+/**
+ * Adds tracks to a Spotify playlist
+ * 
+ * @param playlistId - Spotify playlist ID
+ * @param tracks - Tracks to add
+ * @param accessToken - OAuth access token
+ * @returns Result of the operation
+ */
+export async function addTracksToPlaylist(
+  playlistId: string,
+  tracks: ITrack[],
+  accessToken: string
+): Promise<{ success: boolean; count: number }> {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    let addedCount = 0;
+    
+    // For tracks without Spotify URIs, search for them first
+    const tracksToAdd: string[] = [];
+    
+    for (const track of tracks) {
+      try {
+        if (track.uri && track.platform === 'spotify') {
+          // Track already has a Spotify URI
+          tracksToAdd.push(track.uri);
+          addedCount++;
+        } else {
+          // Search for the track on Spotify
+          const searchQuery = `track:${track.title} artist:${track.artist}`;
+          const searchResponse = await spotify.searchTracks(searchQuery, { limit: 1 });
+          
+          if (searchResponse.body.tracks && searchResponse.body.tracks.items.length > 0) {
+            const spotifyTrack = searchResponse.body.tracks.items[0];
+            tracksToAdd.push(spotifyTrack.uri);
+            addedCount++;
+          }
+        }
+      } catch (trackError) {
+        console.error(`Error processing track "${track.title}" for Spotify playlist:`, trackError);
+        // Continue with next track
+      }
+    }
+    
+    // Add tracks in batches of 100 (Spotify API limit)
+    const batchSize = 100;
+    for (let i = 0; i < tracksToAdd.length; i += batchSize) {
+      const batch = tracksToAdd.slice(i, i + batchSize);
+      await spotify.addTracksToPlaylist(playlistId, batch);
+    }
+    
+    return { success: true, count: addedCount };
+  } catch (error) {
+    console.error('Error adding tracks to Spotify playlist:', error);
+    return { success: false, count: 0 };
+  }
+}
+
+/**
+ * Removes tracks from a Spotify playlist
+ * 
+ * @param playlistId - Spotify playlist ID
+ * @param trackUris - URIs of tracks to remove
+ * @param accessToken - OAuth access token
+ * @returns Result of the operation
+ */
+export async function removeTracksFromPlaylist(
+  playlistId: string,
+  trackUris: string[],
+  accessToken: string
+): Promise<{ success: boolean; count: number }> {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    
+    // Remove tracks in batches of 100 (Spotify API limit)
+    const batchSize = 100;
+    let removedCount = 0;
+    
+    for (let i = 0; i < trackUris.length; i += batchSize) {
+      const batch = trackUris.slice(i, i + batchSize);
+      const tracksToRemove = batch.map(uri => ({ uri }));
+      
+      await spotify.removeTracksFromPlaylist(playlistId, tracksToRemove);
+      removedCount += batch.length;
+    }
+    
+    return { success: true, count: removedCount };
+  } catch (error) {
+    console.error('Error removing tracks from Spotify playlist:', error);
+    return { success: false, count: 0 };
+  }
+}
+
+/**
+ * Updates Spotify playlist details
+ * 
+ * @param playlistId - Spotify playlist ID
+ * @param details - New playlist details
+ * @param accessToken - OAuth access token
+ * @returns Updated playlist data
+ */
+export async function updatePlaylistDetails(
+  playlistId: string,
+  details: { name?: string; description?: string; isPublic?: boolean },
+  accessToken: string
+): Promise<{ success: boolean }> {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    
+    await spotify.changePlaylistDetails(playlistId, {
+      name: details.name,
+      description: details.description,
+      public: details.isPublic
+    });
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating Spotify playlist details:', error);
+    return { success: false };
+  }
+}
+
+/**
+ * Creates a new playlist on Spotify
+ * 
+ * @param name - Playlist name
+ * @param description - Playlist description
+ * @param isPublic - Whether the playlist is public
+ * @param accessToken - OAuth access token
+ * @returns Created playlist ID
+ */
+export async function createPlaylist(
+  name: string,
+  description: string,
+  isPublic: boolean,
+  accessToken: string
+): Promise<{ id: string; success: boolean }> {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    
+    // Get user ID (required for creating playlists)
+    const meResponse = await spotify.getMe();
+    const userId = meResponse.body.id;
+    
+    const response = await spotify.createPlaylist(userId, name, {
+      description,
+      public: isPublic
+    });
+    
+    return { id: response.body.id, success: true };
+  } catch (error) {
+    console.error('Error creating Spotify playlist:', error);
+    return { id: '', success: false };
+  }
+}
+
+/**
+ * Searches for tracks on Spotify
+ * 
+ * @param query - Search query
+ * @param accessToken - OAuth access token
+ * @param limit - Maximum number of results to return
+ * @returns Search results
+ */
+export async function searchTracks(
+  query: string,
+  accessToken: string,
+  limit = 10
+): Promise<ITrack[]> {
+  try {
+    const spotify = createSpotifyClient(accessToken);
+    
+    const searchResponse = await spotify.searchTracks(query, { limit });
+    
+    if (!searchResponse.body.tracks || !searchResponse.body.tracks.items) {
+      return [];
+    }
+    
+    return searchResponse.body.tracks.items.map(track => convertSpotifyTrack({
+      id: track.id,
+      name: track.name,
+      artists: track.artists.map(artist => ({
+        id: artist.id,
+        name: artist.name
+      })),
+      album: track.album ? {
+        id: track.album.id,
+        name: track.album.name,
+        images: track.album.images
+      } : undefined,
+      duration_ms: track.duration_ms,
+      uri: track.uri
+    }));
+  } catch (error) {
+    console.error('Error searching Spotify tracks:', error);
+    return [];
+  }
+} 

@@ -25,6 +25,7 @@ export interface PlaylistTrack {
   duration?: number;
   addedAt: Date;
   id?: string;
+  _id?: string | mongoose.Types.ObjectId;
   imageUrl?: string;
   platform?: string;
   spotifyId?: string;

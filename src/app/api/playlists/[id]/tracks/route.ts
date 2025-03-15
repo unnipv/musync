@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import { ObjectId } from 'mongodb';
 import dbConnect from '@/lib/mongoose';
-import Playlist from '@/lib/models/playlist';
-import authOptions from '@/lib/auth';
+import Playlist from '@/models/Playlist';
+import { authOptions } from '@/lib/auth';
 
 /**
  * Handles POST requests to add tracks to a playlist
+ * Also handles DELETE requests sent as POST
+ * 
  * @param request - The incoming request object
  * @param params - The route parameters containing the playlist ID
  * @returns A response containing the updated playlist
@@ -15,12 +17,48 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  console.log('POST request received for playlist:', params.id);
+  console.log('Request headers:', Object.fromEntries([...request.headers.entries()]));
+  
+  // Check if this is actually a DELETE request sent as POST
+  const methodOverride = request.headers.get('X-HTTP-Method-Override');
+  
+  // Clone the request to read the body
+  const clonedRequest = request.clone();
+  let requestText;
+  try {
+    requestText = await clonedRequest.text();
+    console.log('Request body text:', requestText);
+  } catch (error) {
+    console.error('Error reading request body:', error);
+  }
+  
+  let requestBody;
+  if (requestText) {
+    try {
+      requestBody = JSON.parse(requestText);
+      console.log('Parsed request body:', requestBody);
+    } catch (error) {
+      console.error('Error parsing request body:', error);
+    }
+  }
+  
+  // If this is a DELETE request sent as POST, handle it as DELETE
+  if (
+    methodOverride === 'DELETE' || 
+    (requestBody && requestBody._method === 'DELETE')
+  ) {
+    console.log('Handling as DELETE request due to method override');
+    return handleDeleteRequest(request, params, requestBody);
+  }
+  
+  // Otherwise, handle as a normal POST request
   try {
     const session = await getServerSession(authOptions);
     
     if (!session || !session.user.id) {
       return NextResponse.json(
-        { success: false, message: 'Unauthorized' },
+        { success: false, error: 'Unauthorized' },
         { status: 401 }
       );
     }
@@ -29,16 +67,26 @@ export async function POST(
     
     if (!ObjectId.isValid(id)) {
       return NextResponse.json(
-        { success: false, message: 'Invalid playlist ID' },
+        { success: false, error: 'Invalid playlist ID' },
         { status: 400 }
       );
     }
     
-    const { tracks } = await request.json();
+    // Parse request body safely
+    let tracks;
+    try {
+      const body = requestBody || await request.json();
+      tracks = body.tracks;
+    } catch (parseError) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid request body' },
+        { status: 400 }
+      );
+    }
     
     if (!Array.isArray(tracks) || tracks.length === 0) {
       return NextResponse.json(
-        { success: false, message: 'No tracks provided' },
+        { success: false, error: 'No tracks provided' },
         { status: 400 }
       );
     }
@@ -50,14 +98,14 @@ export async function POST(
     
     if (!playlist) {
       return NextResponse.json(
-        { success: false, message: 'Playlist not found' },
+        { success: false, error: 'Playlist not found' },
         { status: 404 }
       );
     }
     
     if (playlist.userId.toString() !== session.user.id) {
       return NextResponse.json(
-        { success: false, message: 'Access denied' },
+        { success: false, error: 'Access denied' },
         { status: 403 }
       );
     }
@@ -69,12 +117,180 @@ export async function POST(
     return NextResponse.json({
       success: true,
       message: 'Tracks added successfully',
-      playlist
+      playlistId: id,
+      addedCount: tracks.length
     });
   } catch (error) {
     console.error('Error adding tracks:', error);
     return NextResponse.json(
-      { success: false, message: 'Failed to add tracks', error: (error as Error).message },
+      { 
+        success: false, 
+        error: 'Failed to add tracks', 
+        details: error instanceof Error ? error.message : String(error)
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Helper function to handle DELETE requests (either direct or via method override)
+ */
+async function handleDeleteRequest(
+  request: NextRequest,
+  params: { id: string },
+  parsedBody?: any
+) {
+  console.log('Processing DELETE request for playlist:', params.id);
+  
+  try {
+    const session = await getServerSession(authOptions);
+    
+    if (!session || !session.user.id) {
+      console.log('Unauthorized: No valid session or user ID');
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    const { id } = params;
+    console.log('Playlist ID:', id);
+    
+    if (!ObjectId.isValid(id)) {
+      console.log('Invalid playlist ID:', id);
+      return NextResponse.json(
+        { success: false, error: 'Invalid playlist ID' },
+        { status: 400 }
+      );
+    }
+    
+    // Get trackIds from the parsed body if provided, otherwise parse the request
+    let trackIds;
+    if (parsedBody && parsedBody.trackIds) {
+      trackIds = parsedBody.trackIds;
+      console.log('Using trackIds from parsed body:', trackIds);
+    } else {
+      try {
+        // Check if the request has a body before trying to parse it
+        const contentType = request.headers.get('content-type');
+        console.log('Content-Type:', contentType);
+        
+        if (!contentType || !contentType.includes('application/json')) {
+          console.log('Invalid Content-Type:', contentType);
+          return NextResponse.json(
+            { success: false, error: 'Content-Type must be application/json' },
+            { status: 400 }
+          );
+        }
+        
+        // Clone the request before reading the body to avoid stream already read errors
+        const clonedRequest = request.clone();
+        const text = await clonedRequest.text();
+        console.log('Request body text:', text);
+        
+        // Check if the body is empty
+        if (!text || text.trim() === '') {
+          console.log('Empty request body');
+          return NextResponse.json(
+            { success: false, error: 'Request body is empty' },
+            { status: 400 }
+          );
+        }
+        
+        // Parse the JSON body
+        const body = JSON.parse(text);
+        console.log('Parsed body:', body);
+        
+        trackIds = body.trackIds;
+        console.log('Received trackIds:', trackIds);
+        
+        if (!trackIds) {
+          console.log('No trackIds field in request body');
+          return NextResponse.json(
+            { success: false, error: 'No trackIds field in request body' },
+            { status: 400 }
+          );
+        }
+      } catch (parseError) {
+        console.error('Error parsing request body:', parseError);
+        return NextResponse.json(
+          { success: false, error: 'Invalid JSON in request body', details: String(parseError) },
+          { status: 400 }
+        );
+      }
+    }
+    
+    if (!Array.isArray(trackIds) || trackIds.length === 0) {
+      console.log('Invalid trackIds (not an array or empty):', trackIds);
+      return NextResponse.json(
+        { success: false, error: 'No track IDs provided' },
+        { status: 400 }
+      );
+    }
+    
+    await dbConnect();
+    console.log('Connected to database');
+    
+    // Find the playlist and check ownership
+    const playlist = await Playlist.findById(id);
+    
+    if (!playlist) {
+      console.log('Playlist not found:', id);
+      return NextResponse.json(
+        { success: false, error: 'Playlist not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (playlist.userId.toString() !== session.user.id) {
+      console.log('Access denied. User ID:', session.user.id, 'Playlist owner:', playlist.userId.toString());
+      return NextResponse.json(
+        { success: false, error: 'Access denied' },
+        { status: 403 }
+      );
+    }
+    
+    // Count tracks before removal
+    const originalTrackCount = playlist.tracks.length;
+    console.log('Original track count:', originalTrackCount);
+    console.log('Tracks to remove:', trackIds);
+    console.log('Current tracks:', playlist.tracks.map((t: any) => ({ id: t._id.toString(), title: t.title })));
+    
+    // Remove tracks from the playlist
+    playlist.tracks = playlist.tracks.filter((track: any) => {
+      const trackIdStr = track._id.toString();
+      const trackId = track.id || trackIdStr;
+      const shouldKeep = !trackIds.includes(trackIdStr) && !trackIds.includes(trackId);
+      console.log(`Track ${trackIdStr}/${trackId} (${track.title}): ${shouldKeep ? 'keeping' : 'removing'}`);
+      return shouldKeep;
+    });
+    
+    // Count removed tracks
+    const removedCount = originalTrackCount - playlist.tracks.length;
+    console.log('Removed track count:', removedCount);
+    
+    // Save the updated playlist
+    await playlist.save();
+    console.log('Playlist saved successfully');
+    
+    const response = {
+      success: true,
+      message: 'Tracks removed successfully',
+      playlistId: id,
+      removedCount: removedCount
+    };
+    console.log('Response:', response);
+    
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Error removing tracks:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to remove tracks', 
+        details: error instanceof Error ? error.message : String(error)
+      },
       { status: 500 }
     );
   }
@@ -82,6 +298,7 @@ export async function POST(
 
 /**
  * Handles DELETE requests to remove tracks from a playlist
+ * 
  * @param request - The incoming request object
  * @param params - The route parameters containing the playlist ID
  * @returns A response containing the updated playlist
@@ -90,67 +307,144 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  console.log('DELETE request received for playlist:', params.id);
+  console.log('Request headers:', Object.fromEntries([...request.headers.entries()]));
+  console.log('Request URL:', request.url);
+  
   try {
     const session = await getServerSession(authOptions);
     
     if (!session || !session.user.id) {
+      console.log('Unauthorized: No valid session or user ID');
       return NextResponse.json(
-        { success: false, message: 'Unauthorized' },
+        { success: false, error: 'Unauthorized' },
         { status: 401 }
       );
     }
     
     const { id } = params;
+    console.log('Playlist ID:', id);
     
     if (!ObjectId.isValid(id)) {
+      console.log('Invalid playlist ID:', id);
       return NextResponse.json(
-        { success: false, message: 'Invalid playlist ID' },
+        { success: false, error: 'Invalid playlist ID' },
         { status: 400 }
       );
     }
     
-    const { trackIds } = await request.json();
+    // Get trackIds from query parameters
+    const url = new URL(request.url);
+    const trackId = url.searchParams.get('trackId');
+    console.log('Track ID from query parameter:', trackId);
     
-    if (!Array.isArray(trackIds) || trackIds.length === 0) {
+    let trackIds: string[] = [];
+    
+    if (trackId) {
+      // Single track ID from query parameter
+      trackIds = [trackId];
+      console.log('Using track ID from query parameter:', trackIds);
+    } else {
+      // Try to get trackIds from request body
+      try {
+        // Check if the request has a body before trying to parse it
+        const contentType = request.headers.get('content-type');
+        console.log('Content-Type:', contentType);
+        
+        if (contentType && contentType.includes('application/json')) {
+          // Clone the request before reading the body to avoid stream already read errors
+          const clonedRequest = request.clone();
+          const text = await clonedRequest.text();
+          console.log('Request body text:', text);
+          
+          // Check if the body is empty
+          if (text && text.trim() !== '') {
+            // Parse the JSON body
+            const body = JSON.parse(text);
+            console.log('Parsed body:', body);
+            
+            if (body.trackIds && Array.isArray(body.trackIds)) {
+              trackIds = body.trackIds;
+              console.log('Using trackIds from request body:', trackIds);
+            }
+          }
+        }
+      } catch (parseError) {
+        console.error('Error parsing request body:', parseError);
+      }
+    }
+    
+    if (trackIds.length === 0) {
+      console.log('No track IDs provided');
       return NextResponse.json(
-        { success: false, message: 'No track IDs provided' },
+        { success: false, error: 'No track IDs provided' },
         { status: 400 }
       );
     }
     
     await dbConnect();
+    console.log('Connected to database');
     
     // Find the playlist and check ownership
     const playlist = await Playlist.findById(id);
     
     if (!playlist) {
+      console.log('Playlist not found:', id);
       return NextResponse.json(
-        { success: false, message: 'Playlist not found' },
+        { success: false, error: 'Playlist not found' },
         { status: 404 }
       );
     }
     
     if (playlist.userId.toString() !== session.user.id) {
+      console.log('Access denied. User ID:', session.user.id, 'Playlist owner:', playlist.userId.toString());
       return NextResponse.json(
-        { success: false, message: 'Access denied' },
+        { success: false, error: 'Access denied' },
         { status: 403 }
       );
     }
     
-    // Remove tracks from the playlist
-    playlist.tracks = playlist.tracks.filter((track: any) => !trackIds.includes(track._id.toString()));
-    await playlist.save();
+    // Count tracks before removal
+    const originalTrackCount = playlist.tracks.length;
+    console.log('Original track count:', originalTrackCount);
+    console.log('Tracks to remove:', trackIds);
+    console.log('Current tracks:', playlist.tracks.map((t: any) => ({ id: t._id.toString(), title: t.title })));
     
-    return NextResponse.json({
+    // Remove tracks from the playlist
+    playlist.tracks = playlist.tracks.filter((track: any) => {
+      const trackIdStr = track._id.toString();
+      const trackId = track.id || trackIdStr;
+      const shouldKeep = !trackIds.includes(trackIdStr) && !trackIds.includes(trackId);
+      console.log(`Track ${trackIdStr}/${trackId} (${track.title}): ${shouldKeep ? 'keeping' : 'removing'}`);
+      return shouldKeep;
+    });
+    
+    // Count removed tracks
+    const removedCount = originalTrackCount - playlist.tracks.length;
+    console.log('Removed track count:', removedCount);
+    
+    // Save the updated playlist
+    await playlist.save();
+    console.log('Playlist saved successfully');
+    
+    const response = {
       success: true,
       message: 'Tracks removed successfully',
-      playlist
-    });
+      playlistId: id,
+      removedCount: removedCount
+    };
+    console.log('Response:', response);
+    
+    return NextResponse.json(response);
   } catch (error) {
     console.error('Error removing tracks:', error);
     return NextResponse.json(
-      { success: false, message: 'Failed to remove tracks', error: (error as Error).message },
+      { 
+        success: false, 
+        error: 'Failed to remove tracks', 
+        details: error instanceof Error ? error.message : String(error)
+      },
       { status: 500 }
     );
   }
-} 
+}

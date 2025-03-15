@@ -6,7 +6,7 @@ import Link from 'next/link';
 import PlaylistForm from '@/components/PlaylistForm';
 import TrackList from './TrackList';
 import ImportButton from './ImportButton';
-import SyncButton from './SyncButton';
+import SyncStatus from '@/components/SyncStatus';
 
 interface PlatformData {
   provider: string;
@@ -36,6 +36,9 @@ interface Playlist {
   isPublic: boolean;
   tracks: Track[];
   platformData: PlatformData[];
+  spotifyId?: string;
+  youtubeId?: string;
+  lastSyncedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -48,29 +51,25 @@ interface PlaylistDetailProps {
 /**
  * Component to display and manage a playlist's details
  * 
- * @param playlist - The playlist data to display
- * @param isOwner - Whether the current user owns the playlist
- * @returns A component displaying the playlist details
+ * @param props - Component properties
+ * @returns React component
  */
 export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // Determine which platforms this playlist is on
-  const platforms = playlist.platformData.map(p => p.provider);
-  const isOnSpotify = platforms.includes('spotify');
-  const isOnYouTube = platforms.includes('youtube');
-  
+
+  // Check if platforms are connected
+  const spotifyConnected = !!playlist.spotifyId;
+  const youtubeConnected = !!playlist.youtubeId;
+  const lastSyncedAt = playlist.lastSyncedAt ? new Date(playlist.lastSyncedAt) : null;
+
   /**
-   * Handles deleting the playlist
+   * Handles playlist deletion
    */
   const handleDelete = async () => {
-    if (!isDeleting) {
-      setIsDeleting(true);
-      return;
-    }
+    if (!isDeleting) return;
     
     try {
       const response = await fetch(`/api/playlists/${playlist._id}`, {
@@ -79,130 +78,126 @@ export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProp
       
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.message || 'Failed to delete playlist');
+        throw new Error(data.error || 'Failed to delete playlist');
       }
       
       router.push('/playlists');
       router.refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(err instanceof Error ? err.message : 'Unknown error occurred');
       setIsDeleting(false);
     }
   };
-  
-  /**
-   * Handles successful playlist update
-   */
-  const handleUpdateSuccess = () => {
-    setIsEditing(false);
-    router.refresh();
-  };
-  
-  if (isEditing && isOwner) {
-    return (
-      <div>
-        <div className="mb-8">
-          <button 
-            onClick={() => setIsEditing(false)} 
-            className="pixel-button"
-          >
-            BACK
-          </button>
+
+  return (
+    <div className="space-y-6">
+      {error && (
+        <div className="p-4 border border-red-500 bg-black text-red-500 rounded">
+          <p>{error}</p>
         </div>
-        
-        <h1 className="text-4xl font-pixel phosphor-text mb-8">EDIT PLAYLIST</h1>
-        
-        <PlaylistForm 
-          mode="edit" 
+      )}
+      
+      {isEditing ? (
+        <PlaylistForm
           initialData={{
             id: playlist._id,
             name: playlist.name,
             description: playlist.description,
             isPublic: playlist.isPublic
           }}
-          onSuccess={handleUpdateSuccess}
+          mode="edit"
+          onSuccess={() => {
+            setIsEditing(false);
+            router.refresh();
+          }}
         />
-      </div>
-    );
-  }
-  
-  return (
-    <div>
-      <div className="mb-8">
-        <Link href="/playlists" className="pixel-button">
-          BACK
-        </Link>
-      </div>
-      
-      {error && (
-        <div className="bg-red-500 text-white p-4 rounded font-retro mb-4">
-          {error}
-        </div>
-      )}
-      
-      <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-8">
-        <div>
-          <h1 className="text-4xl font-pixel phosphor-text mb-2">{playlist.name}</h1>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-green-400 mb-2">{playlist.name}</h1>
+              {playlist.description && (
+                <p className="text-green-300 mb-4">{playlist.description}</p>
+              )}
+              <p className="text-green-200 text-sm">
+                {playlist.tracks.length} tracks • Created {new Date(playlist.createdAt).toLocaleDateString()}
+              </p>
+            </div>
+            
+            {isOwner && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="px-4 py-2 border border-green-500 text-green-400 hover:bg-green-900 hover:bg-opacity-30"
+                >
+                  EDIT
+                </button>
+                
+                {isDeleting ? (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleDelete}
+                      className="px-4 py-2 border border-red-500 text-red-400 hover:bg-red-900 hover:bg-opacity-30"
+                    >
+                      CONFIRM
+                    </button>
+                    <button
+                      onClick={() => setIsDeleting(false)}
+                      className="px-4 py-2 border border-green-500 text-green-400 hover:bg-green-900 hover:bg-opacity-30"
+                    >
+                      CANCEL
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsDeleting(true)}
+                    className="px-4 py-2 border border-red-500 text-red-400 hover:bg-red-900 hover:bg-opacity-30"
+                  >
+                    DELETE
+                  </button>
+                )}
+                
+                <ImportButton playlistId={playlist._id} />
+                
+                <Link
+                  href={`/playlists/${playlist._id}/connect`}
+                  className="px-4 py-2 border border-blue-500 text-blue-400 hover:bg-blue-900 hover:bg-opacity-30"
+                >
+                  CONNECT
+                </Link>
+              </div>
+            )}
+          </div>
           
-          {playlist.description && (
-            <p className="font-retro mb-4">{playlist.description}</p>
+          {isOwner && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2">
+                <TrackList 
+                  tracks={playlist.tracks} 
+                  playlistId={playlist._id}
+                  isOwner={isOwner}
+                />
+              </div>
+              <div className="lg:col-span-1">
+                <SyncStatus
+                  playlistId={playlist._id}
+                  spotifyConnected={spotifyConnected}
+                  youtubeConnected={youtubeConnected}
+                  lastSyncedAt={lastSyncedAt}
+                />
+              </div>
+            </div>
           )}
           
-          <div className="flex flex-wrap gap-2 mb-4">
-            {isOnSpotify && (
-              <span className="px-2 py-1 bg-phosphor-dark text-phosphor text-xs font-retro">
-                SPOTIFY
-              </span>
-            )}
-            
-            {isOnYouTube && (
-              <span className="px-2 py-1 bg-phosphor-dark text-phosphor text-xs font-retro">
-                YOUTUBE
-              </span>
-            )}
-            
-            {!playlist.isPublic && (
-              <span className="px-2 py-1 bg-phosphor-dark text-phosphor text-xs font-retro">
-                PRIVATE
-              </span>
-            )}
-          </div>
-          
-          <p className="font-retro text-sm mb-4">
-            {playlist.tracks.length} tracks
-          </p>
+          {!isOwner && (
+            <TrackList 
+              tracks={playlist.tracks} 
+              playlistId={playlist._id}
+              isOwner={isOwner}
+            />
+          )}
         </div>
-        
-        {isOwner && (
-          <div className="flex flex-wrap gap-2 mb-4">
-            <button 
-              onClick={() => setIsEditing(true)} 
-              className="pixel-button"
-            >
-              EDIT
-            </button>
-            
-            <button 
-              onClick={handleDelete} 
-              className={`pixel-button ${isDeleting ? 'bg-red-500 text-white' : ''}`}
-            >
-              {isDeleting ? 'CONFIRM DELETE' : 'DELETE'}
-            </button>
-            
-            <ImportButton playlistId={playlist._id} />
-            
-            {playlist.platformData.length > 1 && (
-              <SyncButton playlistId={playlist._id} />
-            )}
-          </div>
-        )}
-      </div>
-      
-      <TrackList 
-        tracks={playlist.tracks} 
-        playlistId={playlist._id} 
-        isOwner={isOwner} 
-      />
+      )}
     </div>
   );
 } 
