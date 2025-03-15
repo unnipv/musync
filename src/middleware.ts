@@ -41,10 +41,7 @@ export async function middleware(request: NextRequest) {
  */
 export const config = {
   matcher: [
-    '/login',
-    '/signup',
-    '/playlists/:path*',
-    '/profile/:path*',
-    '/api/auth/signin'
+    // Exclude paths that should be publicly accessible
+    '/((?!api|_next/static|_next/image|favicon.ico|api/auth/callback/*).*)',
   ],
 }; 

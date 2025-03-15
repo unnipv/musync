@@ -29,7 +29,8 @@ export default function LoginPage() {
     
     try {
       const result = await signIn('credentials', {
-        redirect: false,
+        redirect: true,
+        callbackUrl: '/playlists',
         email,
         password
       })
@@ -40,6 +41,7 @@ export default function LoginPage() {
         return
       }
       
+      // The redirect: true should handle this, but as a fallback:
       router.push('/playlists')
     } catch (error) {
       setError('An error occurred during login')
@@ -53,7 +55,10 @@ export default function LoginPage() {
    */
   const handleSpotifyLogin = (e: React.MouseEvent) => {
     e.preventDefault()
-    signIn('spotify', { callbackUrl: '/playlists' })
+    signIn('spotify', { 
+      callbackUrl: '/playlists',
+      redirect: true
+    })
   }
   
   return (
