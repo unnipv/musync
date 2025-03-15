@@ -64,7 +64,7 @@ async function refreshSpotifyAccessToken(token: JWT) {
 /**
  * Configuration options for NextAuth
  */
-const authOptions: NextAuthOptions = {
+export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
       id: 'credentials',
@@ -206,6 +206,4 @@ const authOptions: NextAuthOptions = {
     error: '/login'
   },
   debug: process.env.NODE_ENV === 'development'
-};
-
-export default authOptions; 
+}; 

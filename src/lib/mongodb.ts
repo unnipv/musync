@@ -1,72 +1,45 @@
-import { MongoClient, Db } from 'mongodb';
+import mongoose from 'mongoose';
 
-/**
- * Global MongoDB client and database connection
- */
-interface MongoConnection {
-  client: MongoClient | null;
-  db: Db | null;
-  promise: Promise<{ client: MongoClient; db: Db }> | null;
+if (!process.env.MONGODB_URI) {
+  throw new Error('Please add your MongoDB URI to .env.local');
 }
 
-/**
- * Global MongoDB connection object
- */
-const globalWithMongo = global as typeof global & {
-  mongo: MongoConnection;
-};
+const MONGODB_URI = process.env.MONGODB_URI;
 
-// Initialize the global MongoDB connection object
-if (!globalWithMongo.mongo) {
-  globalWithMongo.mongo = {
-    client: null,
-    db: null,
-    promise: null,
-  };
+/**
+ * Global is used here to maintain a cached connection across hot reloads
+ * in development. This prevents connections growing exponentially
+ * during API Route usage.
+ */
+let cached = global.mongoose;
+
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
 }
 
-/**
- * Connects to the MongoDB database
- * 
- * @returns A promise that resolves to the MongoDB client and database
- */
-export async function connectToDatabase(): Promise<{ client: MongoClient; db: Db }> {
-  // If we already have a connection, return it
-  if (globalWithMongo.mongo.client && globalWithMongo.mongo.db) {
-    return {
-      client: globalWithMongo.mongo.client,
-      db: globalWithMongo.mongo.db,
+async function connectDB() {
+  if (cached.conn) {
+    return cached.conn;
+  }
+
+  if (!cached.promise) {
+    const opts = {
+      bufferCommands: false,
     };
+
+    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
+      return mongoose;
+    });
   }
 
-  // If a connection is being established, return the promise
-  if (globalWithMongo.mongo.promise) {
-    return globalWithMongo.mongo.promise;
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    throw e;
   }
 
-  // Get the MongoDB connection URI from environment variables
-  const MONGODB_URI = process.env.MONGODB_URI;
+  return cached.conn;
+}
 
-  if (!MONGODB_URI) {
-    throw new Error('Please define the MONGODB_URI environment variable');
-  }
-
-  // Create a new connection promise
-  globalWithMongo.mongo.promise = new Promise((resolve, reject) => {
-    const client = new MongoClient(MONGODB_URI as string);
-
-    client
-      .connect()
-      .then((client) => {
-        const db = client.db();
-        globalWithMongo.mongo.client = client;
-        globalWithMongo.mongo.db = db;
-        resolve({ client, db });
-      })
-      .catch((error) => {
-        reject(error);
-      });
-  });
-
-  return globalWithMongo.mongo.promise;
-} 
+export default connectDB; 
