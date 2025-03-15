@@ -1,0 +1,271 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import SongList from './SongList';
+import AddSongForm from './AddSongForm';
+
+// SVG icons instead of react-icons
+const SpotifyIcon = () => (
+  <svg className="w-5 h-5 text-green-500" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+  </svg>
+);
+
+const YouTubeIcon = () => (
+  <svg className="w-5 h-5 text-green-500" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+  </svg>
+);
+
+const SyncIcon = ({ spinning = false }: { spinning?: boolean }) => (
+  <svg 
+    className={`w-4 h-4 mr-2 ${spinning ? 'animate-spin' : ''}`} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+  </svg>
+);
+
+/**
+ * Component for displaying and managing a playlist's details
+ * 
+ * @param props - Component props containing the playlist data and ownership status
+ * @returns The playlist detail component
+ */
+export default function PlaylistDetail({ 
+  playlist, 
+  isOwner = true 
+}: { 
+  playlist: any; 
+  isOwner?: boolean;
+}) {
+  const router = useRouter();
+  const [isEditing, setIsEditing] = useState(false);
+  const [title, setTitle] = useState(playlist.title || playlist.name || '');
+  const [description, setDescription] = useState(playlist.description || '');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
+  const [songs, setSongs] = useState<any[]>([]);
+  
+  // Debug the playlist structure
+  useEffect(() => {
+    console.log('Playlist data in component:', playlist);
+    
+    // Determine where songs are stored in the playlist object
+    const songsData = playlist.tracks || playlist.songs || [];
+    console.log('Songs data in component:', songsData);
+    setSongs(songsData);
+  }, [playlist]);
+  
+  // Check if the playlist has connected platforms
+  const hasSpotify = !!playlist.spotifyId || (playlist.platformData && playlist.platformData.some((p: any) => p.platform === 'spotify'));
+  const hasYouTube = !!playlist.youtubeId || (playlist.platformData && playlist.platformData.some((p: any) => p.platform === 'youtube'));
+  const hasConnectedPlatforms = hasSpotify || hasYouTube;
+  
+  const handleSave = async () => {
+    try {
+      const response = await fetch(`/api/playlists/${playlist._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title,
+          description,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update playlist');
+      }
+      
+      setIsEditing(false);
+      router.refresh();
+    } catch (error) {
+      console.error('Error updating playlist:', error);
+    }
+  };
+  
+  const handleDelete = async () => {
+    if (!confirm('Are you sure you want to delete this playlist?')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/playlists/${playlist._id}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete playlist');
+      }
+      
+      router.push('/playlists');
+    } catch (error) {
+      console.error('Error deleting playlist:', error);
+    }
+  };
+  
+  /**
+   * Synchronizes the playlist with connected streaming platforms
+   */
+  const handleSync = async () => {
+    setIsSyncing(true);
+    setSyncMessage('Syncing playlist...');
+    
+    try {
+      // Determine which platforms to sync with
+      const platforms = [];
+      if (hasSpotify) platforms.push('spotify');
+      if (hasYouTube) platforms.push('youtube');
+      
+      if (platforms.length === 0) {
+        setSyncMessage('No platforms connected to sync with.');
+        setIsSyncing(false);
+        return;
+      }
+      
+      console.log('Syncing with platforms:', platforms);
+      
+      const response = await fetch(`/api/playlists/${playlist._id}/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ platforms }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to sync playlist');
+      }
+      
+      const result = await response.json();
+      console.log('Sync result:', result);
+      
+      setSyncMessage('Playlist synced successfully!');
+      setTimeout(() => {
+        setSyncMessage('');
+        router.refresh();
+      }, 3000);
+    } catch (error) {
+      console.error('Error syncing playlist:', error);
+      setSyncMessage(`Failed to sync playlist: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+  
+  return (
+    <div className="bg-black p-6 rounded-lg border border-green-500 shadow-lg">
+      <div className="flex justify-between items-center mb-6">
+        {isEditing ? (
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="bg-black border border-green-500 text-green-500 text-2xl font-bold p-2 w-full"
+          />
+        ) : (
+          <h1 className="text-3xl font-bold text-green-500">{title}</h1>
+        )}
+        
+        <div className="flex space-x-3 items-center">
+          {hasSpotify && <SpotifyIcon />}
+          {hasYouTube && <YouTubeIcon />}
+          
+          {isOwner && hasConnectedPlatforms && (
+            <button 
+              onClick={handleSync} 
+              disabled={isSyncing}
+              className="flex items-center bg-green-800 hover:bg-green-700 text-green-100 px-3 py-1 rounded-md transition-colors disabled:opacity-50"
+            >
+              <SyncIcon spinning={isSyncing} />
+              Sync
+            </button>
+          )}
+        </div>
+      </div>
+      
+      {syncMessage && (
+        <div className="mb-4 p-2 bg-green-900 text-green-100 rounded">
+          {syncMessage}
+        </div>
+      )}
+      
+      {isEditing ? (
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className="bg-black border border-green-500 text-green-500 p-2 w-full mb-4"
+          rows={3}
+        />
+      ) : (
+        <p className="text-green-400 mb-4">{description || 'No description'}</p>
+      )}
+      
+      {isOwner && (
+        <div className="flex space-x-4 mb-6">
+          {isEditing ? (
+            <>
+              <button
+                onClick={handleSave}
+                className="bg-green-600 hover:bg-green-500 text-black px-4 py-2 rounded-md transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setIsEditing(false)}
+                className="bg-gray-800 hover:bg-gray-700 text-green-500 px-4 py-2 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setIsEditing(true)}
+                className="bg-green-600 hover:bg-green-500 text-black px-4 py-2 rounded-md transition-colors"
+              >
+                Edit
+              </button>
+              <button
+                onClick={handleDelete}
+                className="bg-red-900 hover:bg-red-800 text-green-100 px-4 py-2 rounded-md transition-colors"
+              >
+                Delete
+              </button>
+              
+              {!hasConnectedPlatforms && (
+                <button
+                  onClick={() => router.push(`/playlists/${playlist._id}/connect`)}
+                  className="bg-blue-900 hover:bg-blue-800 text-green-100 px-4 py-2 rounded-md transition-colors"
+                >
+                  Connect to Platforms
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      
+      <div className="mb-6">
+        <h2 className="text-xl font-bold text-green-500 mb-4">Songs</h2>
+        <SongList playlistId={playlist._id} songs={songs} />
+      </div>
+      
+      {isOwner && (
+        <div>
+          <h2 className="text-xl font-bold text-green-500 mb-4">Add Song</h2>
+          <AddSongForm playlistId={playlist._id} />
+        </div>
+      )}
+    </div>
+  );
+} 

@@ -1,0 +1,240 @@
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 0, 255, 0;
+  --background-start-rgb: 0, 0, 0;
+  --background-end-rgb: 0, 0, 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground-rgb: 255, 255, 255;
+    --background-start-rgb: 0, 0, 0;
+    --background-end-rgb: 0, 0, 0;
+  }
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+  font-family: 'VT323', monospace;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* CRT effect */
+body::before {
+  content: "";
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: 
+    linear-gradient(
+      rgba(18, 16, 16, 0) 50%, 
+      rgba(0, 0, 0, 0.25) 50%
+    ),
+    linear-gradient(
+      90deg, 
+      rgba(255, 0, 0, 0.06), 
+      rgba(0, 255, 0, 0.02), 
+      rgba(0, 0, 255, 0.06)
+    );
+  background-size: 100% 2px, 3px 100%;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Scanline effect */
+body::after {
+  content: "";
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.15),
+    rgba(0, 0, 0, 0.15) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  pointer-events: none;
+  z-index: 9998;
+  animation: scanline 10s linear infinite;
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+/* CRT flicker effect */
+@keyframes flicker {
+  0% {
+    opacity: 0.97;
+  }
+  5% {
+    opacity: 0.9;
+  }
+  10% {
+    opacity: 0.97;
+  }
+  15% {
+    opacity: 0.92;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  25% {
+    opacity: 0.97;
+  }
+  30% {
+    opacity: 0.94;
+  }
+  35% {
+    opacity: 0.97;
+  }
+  40% {
+    opacity: 0.94;
+  }
+  45% {
+    opacity: 0.97;
+  }
+  50% {
+    opacity: 0.94;
+  }
+  55% {
+    opacity: 0.97;
+  }
+  60% {
+    opacity: 0.9;
+  }
+  65% {
+    opacity: 0.97;
+  }
+  70% {
+    opacity: 0.92;
+  }
+  75% {
+    opacity: 0.97;
+  }
+  80% {
+    opacity: 0.94;
+  }
+  85% {
+    opacity: 0.97;
+  }
+  90% {
+    opacity: 0.94;
+  }
+  95% {
+    opacity: 0.97;
+  }
+  100% {
+    opacity: 0.94;
+  }
+}
+
+/* CRT component classes */
+.crt-text {
+  text-shadow: 0 0 5px #00ff00;
+  animation: flicker 5s infinite;
+}
+
+.crt-panel {
+  box-shadow: 0 0 15px #00ff00, inset 0 0 10px rgba(0, 255, 0, 0.5);
+  animation: flicker 8s infinite;
+}
+
+.crt-card {
+  box-shadow: 0 0 10px #00ff00;
+  transition: all 0.3s ease;
+}
+
+.crt-card:hover {
+  box-shadow: 0 0 15px #00ff00, inset 0 0 5px rgba(0, 255, 0, 0.3);
+}
+
+.crt-input {
+  box-shadow: 0 0 5px #00ff00, inset 0 0 5px rgba(0, 255, 0, 0.2);
+}
+
+.crt-input:focus {
+  box-shadow: 0 0 10px #00ff00, inset 0 0 5px rgba(0, 255, 0, 0.3);
+}
+
+.crt-glow {
+  box-shadow: 0 0 10px #00ff00;
+  text-shadow: 0 0 5px #00ff00;
+}
+
+.crt-glow-blue {
+  box-shadow: 0 0 10px #0066ff;
+  text-shadow: 0 0 5px #0066ff;
+}
+
+.crt-glow-spotify {
+  box-shadow: 0 0 10px #1DB954;
+  text-shadow: 0 0 5px #1DB954;
+}
+
+.crt-glow-youtube {
+  box-shadow: 0 0 10px #ff0000;
+  text-shadow: 0 0 5px #ff0000;
+}
+
+.crt-error {
+  box-shadow: 0 0 10px #ff0000, inset 0 0 5px rgba(255, 0, 0, 0.3);
+  text-shadow: 0 0 5px #ff0000;
+}
+
+.crt-success {
+  box-shadow: 0 0 10px #00ff00, inset 0 0 5px rgba(0, 255, 0, 0.3);
+  text-shadow: 0 0 5px #00ff00;
+}
+
+.crt-warning {
+  text-shadow: 0 0 5px #ffff00;
+}
+
+.crt-link {
+  text-shadow: 0 0 5px #00ffff;
+  transition: all 0.3s ease;
+}
+
+.crt-link:hover {
+  text-shadow: 0 0 8px #00ffff;
+}
+
+.crt-overlay {
+  backdrop-filter: blur(2px);
+}
+
+/* Font VT323 for all text by default */
+.font-vt323 {
+  font-family: 'VT323', monospace;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+} 

@@ -1,0 +1,74 @@
+import { getServerSession } from 'next-auth/next';
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import authOptions from '@/lib/auth';
+import dbConnect from '@/lib/mongoose';
+import Playlist from '@/lib/models/playlist';
+import CreatePlaylistButton from '@/components/CreatePlaylistButton';
+import ImportPlaylistsButton from '@/components/ImportPlaylistsButton';
+
+/**
+ * Playlists page component
+ * 
+ * @returns The playlists page
+ */
+export default async function PlaylistsPage() {
+  const session = await getServerSession(authOptions);
+  
+  if (!session || !session.user) {
+    redirect('/login');
+  }
+  
+  await dbConnect();
+  
+  // Fetch user's playlists
+  const playlists = await Playlist.find({ userId: session.user.id })
+    .sort({ updatedAt: -1 })
+    .lean();
+  
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold text-green-500 font-vt323 crt-text">Your Playlists</h1>
+        <div className="flex space-x-4">
+          <ImportPlaylistsButton />
+          <CreatePlaylistButton />
+        </div>
+      </div>
+      
+      {playlists.length === 0 ? (
+        <div className="bg-black p-6 rounded-lg border-2 border-green-500 shadow-[0_0_15px_#00ff00] text-center crt-panel">
+          <p className="text-green-400 mb-4 font-vt323">You don't have any playlists yet.</p>
+          <p className="text-green-400 font-vt323">
+            Create your first playlist or import from a connected platform.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {playlists.map((playlist) => (
+            <Link
+              key={playlist._id.toString()}
+              href={`/playlists/${playlist._id}`}
+              className="bg-black p-6 rounded-lg border-2 border-green-500 shadow-[0_0_10px_#00ff00] hover:shadow-[0_0_15px_#00ff00] hover:border-green-400 transition-all crt-card"
+            >
+              <h2 className="text-xl font-bold text-green-500 mb-2 font-vt323 crt-text">
+                {playlist.name || playlist.title}
+              </h2>
+              <p className="text-green-400 mb-4 line-clamp-2 font-vt323">
+                {playlist.description || 'No description'}
+              </p>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-green-600 font-vt323">
+                  {playlist.tracks?.length || 0} songs
+                </span>
+                <span className="text-sm text-green-600 font-vt323">
+                  {new Date(playlist.updatedAt).toLocaleDateString()}
+                </span>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+} 
