@@ -1,20 +1,32 @@
 import 'next-auth';
 import { JWT } from 'next-auth/jwt';
+import { DefaultSession } from "next-auth";
 
 declare module 'next-auth' {
   /**
    * Extends the built-in session types
    */
   interface Session {
-    accessToken?: string;
-    error?: string;
-    provider?: string;
     user: {
+      /** The user's id */
       id: string;
+      /** The user's name */
       name?: string | null;
+      /** The user's email address */
       email?: string | null;
+      /** The user's image */
       image?: string | null;
-    };
+      /** Spotify access token */
+      spotifyAccessToken?: string;
+      /** Google access token */
+      googleAccessToken?: string;
+    } & DefaultSession["user"];
+    /** The access token */
+    accessToken?: string;
+    /** The provider (spotify, google, etc.) */
+    provider?: string;
+    /** Any error that occurred during authentication */
+    error?: string;
   }
 
   /**

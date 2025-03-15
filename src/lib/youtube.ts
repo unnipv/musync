@@ -79,11 +79,12 @@ async function syncTracks(localPlaylist: any, youtubePlaylist: any, accessToken:
   const videosToRemoveFromYouTube = [...youtubeVideoIds].filter(id => !localVideoIds.has(id));
   
   // Apply changes to YouTube
-  let added = 0, removed = 0, updated = 0;
+  let added = 0, removed = 0;
+  const updated = 0;
   
   if (videosToAddToYouTube.length > 0) {
     for (const videoId of videosToAddToYouTube) {
-      await addVideoToYouTubePlaylist(localPlaylist.youtubeId, videoId, accessToken);
+      await addVideoToYouTubePlaylist(localPlaylist.youtubeId, videoId as string, accessToken);
     }
     added = videosToAddToYouTube.length;
   }

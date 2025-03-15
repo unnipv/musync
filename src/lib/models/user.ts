@@ -2,6 +2,15 @@ import mongoose, { Schema, Document } from 'mongoose';
 import bcrypt from 'bcrypt';
 
 /**
+ * Interface for platform connection
+ */
+export interface IPlatform {
+  name: string;
+  userId: string;
+  lastSyncedAt: Date | null;
+}
+
+/**
  * Interface for User document
  */
 export interface IUser extends Document {
@@ -10,8 +19,11 @@ export interface IUser extends Document {
   password?: string;
   image?: string;
   platforms: IPlatform[];
+  spotifyId?: string;
+  youtubeId?: string;
   createdAt: Date;
   updatedAt: Date;
+  comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
 /**
@@ -75,21 +87,19 @@ const UserSchema = new Schema<IUser>(
 );
 
 // Hash password before saving
-UserSchema.pre('save', async function(next) {
-  const user = this;
-  
+UserSchema.pre<IUser>('save', async function(next) {
   // Only hash the password if it has been modified (or is new)
-  if (!user.isModified('password') || !user.password) return next();
+  if (!this.isModified('password') || !this.password) return next();
   
   try {
     // Generate a salt
     const salt = await bcrypt.genSalt(10);
     
     // Hash the password along with the new salt
-    const hash = await bcrypt.hash(user.password, salt);
+    const hash = await bcrypt.hash(this.password, salt);
     
     // Override the cleartext password with the hashed one
-    user.password = hash;
+    this.password = hash;
     next();
   } catch (error) {
     next(error as Error);
@@ -113,11 +123,9 @@ UserSchema.methods.comparePassword = async function(candidatePassword: string): 
 /**
  * Pre-save hook to update the updatedAt field
  */
-UserSchema.pre('save', function(next) {
-  this.updatedAt = new Date();
-  
+UserSchema.pre<IUser>('save', function(next) {
   // If spotifyId exists but not in platforms array, add it
-  if (this.spotifyId && !this.platforms.some(p => p.name === 'spotify')) {
+  if (this.spotifyId && !this.platforms.some((p: IPlatform) => p.name === 'spotify')) {
     this.platforms.push({
       name: 'spotify',
       userId: this.spotifyId,
@@ -126,7 +134,7 @@ UserSchema.pre('save', function(next) {
   }
   
   // If youtubeId exists but not in platforms array, add it
-  if (this.youtubeId && !this.platforms.some(p => p.name === 'youtube')) {
+  if (this.youtubeId && !this.platforms.some((p: IPlatform) => p.name === 'youtube')) {
     this.platforms.push({
       name: 'youtube',
       userId: this.youtubeId,

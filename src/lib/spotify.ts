@@ -76,15 +76,16 @@ async function syncTracks(localPlaylist: any, spotifyPlaylist: any, accessToken:
   const tracksToRemoveFromSpotify = [...spotifyTrackIds].filter(id => !localTrackIds.has(id));
   
   // Apply changes to Spotify
-  let added = 0, removed = 0, updated = 0;
+  let added = 0, removed = 0;
+  const updated = 0;
   
   if (tracksToAddToSpotify.length > 0) {
-    await addTracksToSpotify(spotifyPlaylist.id, tracksToAddToSpotify, accessToken);
+    await addTracksToSpotify(spotifyPlaylist.id, tracksToAddToSpotify as string[], accessToken);
     added = tracksToAddToSpotify.length;
   }
   
   if (tracksToRemoveFromSpotify.length > 0) {
-    await removeTracksFromSpotify(spotifyPlaylist.id, tracksToRemoveFromSpotify, accessToken);
+    await removeTracksFromSpotify(spotifyPlaylist.id, tracksToRemoveFromSpotify as string[], accessToken);
     removed = tracksToRemoveFromSpotify.length;
   }
   

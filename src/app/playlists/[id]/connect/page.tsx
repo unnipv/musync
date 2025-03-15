@@ -1,5 +1,5 @@
 import { getServerSession } from 'next-auth/next';
-import { redirect } from 'next/navigation';
+import { redirect, notFound } from 'next/navigation';
 import { ObjectId } from 'mongodb';
 import authOptions from '@/lib/auth';
 import dbConnect from '@/lib/mongoose';
@@ -7,36 +7,62 @@ import Playlist from '@/lib/models/playlist';
 import ConnectPlatformsForm from '@/components/ConnectPlatformsForm';
 
 /**
- * Page for connecting streaming platforms to a playlist
- * 
- * @param props - Page props containing the playlist ID
- * @returns The connect platforms page component
+ * Interface for playlist document from MongoDB
  */
-export default async function ConnectPlatformsPage({ 
-  params 
-}: { 
-  params: { id: string } 
-}) {
-  const session = await getServerSession(authOptions);
-  
-  if (!session || !session.user) {
-    redirect('/login');
-  }
-  
-  if (!ObjectId.isValid(params.id)) {
-    redirect('/playlists');
+interface PlaylistDocument {
+  _id: ObjectId;
+  userId: ObjectId;
+  name?: string;
+  title?: string;
+  description?: string;
+  isPublic?: boolean;
+  tracks: any[];
+  platformData?: any[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface ConnectPageProps {
+  params: {
+    id: string;
+  };
+}
+
+/**
+ * Fetches a playlist by ID
+ * @param id - The playlist ID
+ * @param userId - The user ID
+ * @returns The playlist or null if not found
+ */
+async function getPlaylist(id: string, userId: string): Promise<PlaylistDocument | null> {
+  if (!ObjectId.isValid(id)) {
+    return null;
   }
   
   await dbConnect();
   
-  // Find the playlist and ensure it belongs to the current user
   const playlist = await Playlist.findOne({
-    _id: params.id,
-    userId: session.user.id
-  }).lean();
+    _id: id,
+    userId
+  }).lean() as PlaylistDocument | null;
+  
+  return playlist;
+}
+
+/**
+ * Page for connecting streaming platforms to a playlist
+ */
+export default async function ConnectPlatformsPage({ params }: ConnectPageProps) {
+  const session = await getServerSession(authOptions);
+  
+  if (!session?.user?.id) {
+    redirect('/login');
+  }
+  
+  const playlist = await getPlaylist(params.id, session.user.id);
   
   if (!playlist) {
-    redirect('/playlists');
+    notFound();
   }
   
   return (
@@ -47,7 +73,7 @@ export default async function ConnectPlatformsPage({
       
       <div className="bg-black p-6 rounded-lg border border-green-500 shadow-lg">
         <h2 className="text-2xl font-bold text-green-500 mb-4">
-          {playlist.name || playlist.title}
+          {playlist.name || playlist.title || 'Untitled Playlist'}
         </h2>
         
         <p className="text-green-400 mb-6">
@@ -55,7 +81,7 @@ export default async function ConnectPlatformsPage({
         </p>
         
         <ConnectPlatformsForm 
-          playlistId={params.id} 
+          playlistId={playlist._id.toString()} 
           existingConnections={playlist.platformData || []}
         />
       </div>

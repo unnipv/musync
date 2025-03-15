@@ -20,7 +20,7 @@ export default async function ProfilePage() {
     <div className="container mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold text-green-500 font-vt323 mb-6 crt-text">PROFILE</h1>
       
-      <ProfileContent userId={session.userId || ''} />
+      <ProfileContent userId={session.user.id || ''} />
       
       <div className="mt-6">
         <Link 

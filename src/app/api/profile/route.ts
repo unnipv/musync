@@ -1,156 +1,127 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import authOptions from '@/lib/auth';
-import dbConnect from '@/lib/mongoose';
-import User from '@/lib/models/user';
-import Playlist from '@/lib/models/playlist';
+import { authOptions } from '@/lib/auth';
+import { connectToDatabase } from '@/lib/mongodb';
+import { ObjectId } from 'mongodb';
 
 /**
- * Retrieves the user profile information
- * 
- * @param request - The incoming request
- * @returns The user profile data
+ * Retrieves the user profile for the authenticated user
+ * @param req - The incoming request
+ * @returns JSON response with user profile data
  */
-export async function GET(request: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     
     if (!session || !session.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    
-    console.log('Profile API - Session:', {
-      userId: session.userId,
-      hasAccessToken: !!session.accessToken,
-      user: session.user
-    });
-    
-    await dbConnect();
-    
-    // Get user data
-    const user = await User.findById(session.userId).lean();
-    
-    console.log('Profile API - User from DB:', {
-      found: !!user,
-      id: user?._id,
-      email: user?.email,
-      hasPlatforms: !!user?.platforms,
-      platformsCount: user?.platforms?.length || 0
-    });
-    
-    if (!user) {
-      console.log('User not found in database, creating basic profile with session data');
-      // If user not found in database but we have a session, create a basic user record
-      return NextResponse.json({
-        name: session.user.name || 'User',
-        email: session.user.email || '',
-        image: session.user.image || '',
-        platforms: [],
-        playlists: []
-      });
-    }
-    
-    // Get user's playlists
-    const playlists = await Playlist.find({ userId: session.userId })
-      .select('name description tracks')
-      .lean();
-    
-    console.log('Profile API - Playlists:', {
-      count: playlists.length
-    });
-    
-    // Format playlist data for the response
-    const formattedPlaylists = playlists.map(playlist => ({
-      _id: playlist._id.toString(),
-      name: playlist.name || 'Untitled Playlist',
-      description: playlist.description || '',
-      trackCount: playlist.tracks?.length || 0
-    }));
-    
-    // Ensure platforms is always an array
-    const platforms = Array.isArray(user.platforms) ? user.platforms : [];
-    
-    console.log('Profile API - Platforms to return:', platforms);
-    
-    return NextResponse.json({
-      name: user.name || 'User',
-      email: user.email || '',
-      image: user.image || '',
-      platforms: platforms,
-      playlists: formattedPlaylists
-    });
-  } catch (error) {
-    console.error('Error fetching user profile:', error);
-    // Return a basic profile with error info to prevent UI from breaking
-    return NextResponse.json({
-      name: session?.user?.name || 'User',
-      email: session?.user?.email || '',
-      image: session?.user?.image || '',
-      error: (error as Error).message,
-      platforms: [],
-      playlists: []
-    });
-  }
-}
-
-/**
- * Handles PUT requests to update the current user's profile
- * @param request - The incoming request object
- * @returns A response containing the updated user profile
- */
-export async function PUT(request: NextRequest) {
-  try {
-    const session = await getServerSession(authOptions);
-    
-    if (!session || !session.userId) {
       return NextResponse.json(
-        { success: false, message: 'Unauthorized' },
+        { error: 'Unauthorized' },
         { status: 401 }
       );
     }
     
-    const { name } = await request.json();
+    console.log('Profile API - Session:', {
+      userId: session.user.id,
+      hasAccessToken: !!session.accessToken,
+      user: session.user
+    });
     
-    if (!name) {
-      return NextResponse.json(
-        { success: false, message: 'Name is required' },
-        { status: 400 }
-      );
-    }
+    const { db } = await connectToDatabase();
     
-    await dbConnect();
-    
-    const user = await User.findById(session.userId);
+    // Get user from database
+    const user = await db.collection('users').findOne({
+      _id: new ObjectId(session.user.id)
+    });
     
     if (!user) {
       return NextResponse.json(
-        { success: false, message: 'User not found' },
+        { error: 'User not found' },
         { status: 404 }
       );
     }
     
-    // Update user profile
-    user.name = name;
-    await user.save();
+    // Get connected platforms
+    const platforms = await db.collection('userPlatforms')
+      .find({ userId: new ObjectId(session.user.id) })
+      .toArray();
+    
+    // Get user playlists count
+    const playlistsCount = await db.collection('playlists')
+      .countDocuments({ userId: new ObjectId(session.user.id) });
     
     return NextResponse.json({
-      success: true,
-      message: 'Profile updated successfully',
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        platforms: user.platforms || []
+        image: user.image
+      },
+      platforms: platforms.map(p => ({
+        platform: p.platform,
+        connected: !!p.platformId
+      })),
+      stats: {
+        playlists: playlistsCount
       }
     });
   } catch (error) {
-    console.error('Error updating user profile:', error);
+    console.error('Error fetching profile:', error);
     return NextResponse.json(
-      { 
-        success: false, 
-        message: 'Failed to update user profile', 
-        error: (error as Error).message 
-      },
+      { error: 'Failed to fetch profile', details: String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Updates the user profile for the authenticated user
+ * @param req - The incoming request with profile update data
+ * @returns JSON response indicating success or failure
+ */
+export async function PUT(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    const body = await req.json();
+    const { name } = body;
+    
+    if (!name) {
+      return NextResponse.json(
+        { error: 'Name is required' },
+        { status: 400 }
+      );
+    }
+    
+    const { db } = await connectToDatabase();
+    
+    // Update user in database
+    const result = await db.collection('users').updateOne(
+      { _id: new ObjectId(session.user.id) },
+      { $set: { name, updatedAt: new Date() } }
+    );
+    
+    if (result.matchedCount === 0) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
+    
+    return NextResponse.json({
+      success: true,
+      message: 'Profile updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    return NextResponse.json(
+      { error: 'Failed to update profile', details: String(error) },
       { status: 500 }
     );
   }

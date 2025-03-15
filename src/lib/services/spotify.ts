@@ -288,21 +288,21 @@ export class SpotifyService {
       }
       
       // Check if playlist is already on Spotify
-      const spotifyData = playlist.platformData.find(
-        (data: any) => data.platform === 'spotify'
+      const spotifyData = playlist.platformData?.find(
+        (data) => data.platform === 'spotify'
       );
       
       let spotifyPlaylistId: string;
       
       if (spotifyData) {
         // Update existing Spotify playlist
-        spotifyPlaylistId = spotifyData.platformId;
+        spotifyPlaylistId = spotifyData.id || spotifyData.platformId || '';
         
         // Update playlist details
         await this.spotifyApi.changePlaylistDetails(spotifyPlaylistId, {
-          name: playlist.name,
+          name: playlist.name || 'My Playlist',
           description: playlist.description || '',
-          public: playlist.isPublic
+          public: playlist.isPublic || false
         });
         
         // Get current tracks in Spotify playlist
@@ -318,17 +318,20 @@ export class SpotifyService {
       } else {
         // Create new Spotify playlist
         const newPlaylist = await this.createPlaylist(
-          playlist.name,
+          playlist.name || 'My Playlist',
           playlist.description || '',
-          playlist.isPublic
+          playlist.isPublic || false
         );
         
         spotifyPlaylistId = newPlaylist.id;
         
         // Add platform data to Musync playlist
+        if (!playlist.platformData) {
+          playlist.platformData = [];
+        }
         playlist.platformData.push({
           platform: 'spotify',
-          platformId: spotifyPlaylistId,
+          id: spotifyPlaylistId,
           lastSyncedAt: new Date(),
           syncStatus: 'synced'
         });
@@ -365,13 +368,24 @@ export class SpotifyService {
       }
       
       // Update sync status
-      const platformIndex = playlist.platformData.findIndex(
-        (data: any) => data.platform === 'spotify'
+      const platformIndex = playlist.platformData?.findIndex(
+        (data) => data.platform === 'spotify'
       );
       
-      if (platformIndex >= 0) {
-        playlist.platformData[platformIndex].syncStatus = 'synced';
-        playlist.platformData[platformIndex].lastSyncedAt = new Date();
+      if (platformIndex !== undefined && platformIndex >= 0 && playlist.platformData) {
+        if (!playlist.platformData[platformIndex].syncStatus) {
+          // Add syncStatus property if it doesn't exist
+          const updatedPlatformData = {
+            ...playlist.platformData[platformIndex],
+            syncStatus: 'synced',
+            lastSyncedAt: new Date()
+          };
+          
+          playlist.platformData[platformIndex] = updatedPlatformData;
+        } else {
+          playlist.platformData[platformIndex].syncStatus = 'synced';
+          playlist.platformData[platformIndex].lastSyncedAt = new Date();
+        }
       }
       
       await playlist.save();
@@ -384,13 +398,25 @@ export class SpotifyService {
       const playlist = await Playlist.findById(playlistId);
       
       if (playlist) {
-        const platformIndex = playlist.platformData.findIndex(
-          (data: any) => data.platform === 'spotify'
+        const platformIndex = playlist.platformData?.findIndex(
+          (data) => data.platform === 'spotify'
         );
         
-        if (platformIndex >= 0) {
-          playlist.platformData[platformIndex].syncStatus = 'failed';
-          playlist.platformData[platformIndex].syncError = (error as Error).message;
+        if (platformIndex !== undefined && platformIndex >= 0 && playlist.platformData) {
+          if (!playlist.platformData[platformIndex].syncStatus) {
+            // Add syncStatus property if it doesn't exist
+            const updatedPlatformData = {
+              ...playlist.platformData[platformIndex],
+              syncStatus: 'failed',
+              syncError: (error as Error).message
+            };
+            
+            playlist.platformData[platformIndex] = updatedPlatformData;
+          } else {
+            playlist.platformData[platformIndex].syncStatus = 'failed';
+            playlist.platformData[platformIndex].syncError = (error as Error).message;
+          }
+          
           await playlist.save();
         }
       }

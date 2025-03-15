@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { PlaylistTrack } from '@/lib/models/playlist';
+import TrackList from './TrackList';
 
 // SVG icons instead of react-icons
 const SpotifyIcon = () => (
@@ -26,145 +28,23 @@ const TrashIcon = ({ pulsing = false }: { pulsing?: boolean }) => (
   </svg>
 );
 
+interface SongListProps {
+  playlistId: string;
+  songs: PlaylistTrack[];
+}
+
 /**
- * Component for displaying and managing a list of songs in a playlist
+ * Component for displaying a list of songs in a playlist
  * 
- * @param props - Component props containing the playlist ID and songs array
+ * @param props - Component props containing the playlist ID and songs
  * @returns The song list component
  */
-export default function SongList({ playlistId, songs }: { playlistId: string; songs: any[] }) {
-  const router = useRouter();
-  const [isDeleting, setIsDeleting] = useState<string | null>(null);
-  
-  // Debug the songs data
-  console.log('SongList received songs:', songs);
-  
-  /**
-   * Removes a song from the playlist
-   * 
-   * @param songId - The ID of the song to remove
-   */
-  const handleRemoveSong = async (songId: string) => {
-    setIsDeleting(songId);
-    
-    try {
-      const response = await fetch(`/api/playlists/${playlistId}/songs/${songId}`, {
-        method: 'DELETE',
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to remove song');
-      }
-      
-      router.refresh();
-    } catch (error) {
-      console.error('Error removing song:', error);
-      alert('Failed to remove song. Please try again.');
-    } finally {
-      setIsDeleting(null);
-    }
-  };
-  
-  /**
-   * Formats the song duration from seconds to MM:SS format
-   * 
-   * @param seconds - The duration in seconds
-   * @returns Formatted duration string
-   */
-  const formatDuration = (seconds: number) => {
-    if (!seconds) return '--:--';
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = Math.floor(seconds % 60);
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
-  };
-  
-  /**
-   * Gets the song ID safely from different data structures
-   * 
-   * @param song - The song object
-   * @returns The song ID
-   */
-  const getSongId = (song: any) => {
-    return song._id || song.id || '';
-  };
-  
-  /**
-   * Gets the song title safely from different data structures
-   * 
-   * @param song - The song object
-   * @returns The song title
-   */
-  const getSongTitle = (song: any) => {
-    return song.title || song.name || 'Unknown Title';
-  };
-  
-  /**
-   * Gets the song artist safely from different data structures
-   * 
-   * @param song - The song object
-   * @returns The song artist
-   */
-  const getSongArtist = (song: any) => {
-    return song.artist || (song.artists && song.artists[0]?.name) || 'Unknown Artist';
-  };
-  
-  /**
-   * Gets the song album safely from different data structures
-   * 
-   * @param song - The song object
-   * @returns The song album
-   */
-  const getSongAlbum = (song: any) => {
-    return song.album || (song.album && song.album.name) || '-';
-  };
-  
-  if (!songs || !Array.isArray(songs) || songs.length === 0) {
-    return <p className="text-green-400 italic">No songs in this playlist yet.</p>;
-  }
-  
+export default function SongList({ playlistId, songs }: SongListProps) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse">
-        <thead>
-          <tr className="border-b border-green-800">
-            <th className="text-left py-2 px-4 text-green-500">#</th>
-            <th className="text-left py-2 px-4 text-green-500">Title</th>
-            <th className="text-left py-2 px-4 text-green-500">Artist</th>
-            <th className="text-left py-2 px-4 text-green-500">Album</th>
-            <th className="text-left py-2 px-4 text-green-500">Duration</th>
-            <th className="text-left py-2 px-4 text-green-500">Services</th>
-            <th className="text-left py-2 px-4 text-green-500">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {songs.map((song, index) => (
-            <tr key={getSongId(song) || index} className="border-b border-green-900 hover:bg-green-900/20">
-              <td className="py-2 px-4 text-green-400">{index + 1}</td>
-              <td className="py-2 px-4 text-green-400">{getSongTitle(song)}</td>
-              <td className="py-2 px-4 text-green-400">{getSongArtist(song)}</td>
-              <td className="py-2 px-4 text-green-400">{getSongAlbum(song)}</td>
-              <td className="py-2 px-4 text-green-400">{formatDuration(song.duration)}</td>
-              <td className="py-2 px-4 text-green-400">
-                <div className="flex space-x-2">
-                  {song.spotifyId && <SpotifyIcon />}
-                  {song.youtubeId && <YouTubeIcon />}
-                </div>
-              </td>
-              <td className="py-2 px-4">
-                <button
-                  onClick={() => handleRemoveSong(getSongId(song))}
-                  disabled={isDeleting === getSongId(song)}
-                  className="transition-colors"
-                  title="Remove song"
-                >
-                  <TrashIcon pulsing={isDeleting === getSongId(song)} />
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <TrackList
+      tracks={songs}
+      playlistId={playlistId}
+      isOwner={true}
+    />
   );
 } 

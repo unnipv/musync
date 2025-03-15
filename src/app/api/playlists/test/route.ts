@@ -1,8 +1,10 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import dbConnect from '@/lib/mongoose';
 import Playlist from '@/lib/models/playlist';
-import authOptions from '@/lib/auth';
+import { authOptions } from '@/lib/auth';
 
 /**
  * Test API route that returns a summary of the user's playlists

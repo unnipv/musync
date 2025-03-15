@@ -101,7 +101,7 @@ export default function ProfileContent({ userId }: { userId: string }) {
     return (
       <div className="bg-yellow-900/30 border border-yellow-500 p-4 rounded-md text-green-100 font-vt323 crt-warning">
         <h3 className="text-xl font-bold mb-2">No Profile Data</h3>
-        <p>We couldn't find your profile information.</p>
+        <p>We couldn&apos;t find your profile information.</p>
         <p className="mt-4">Try logging in again.</p>
       </div>
     );
@@ -196,7 +196,7 @@ export default function ProfileContent({ userId }: { userId: string }) {
           </div>
         ) : (
           <div className="text-center py-4">
-            <p className="mb-4">You don't have any playlists yet.</p>
+            <p className="mb-4">You don&apos;t have any playlists yet.</p>
             <Link 
               href="/playlists" 
               className="inline-block px-4 py-2 bg-blue-900 hover:bg-blue-800 text-green-100 rounded-md transition-colors shadow-[0_0_10px_#0066ff] crt-glow-blue"

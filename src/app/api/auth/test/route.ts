@@ -1,34 +1,35 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import authOptions from '@/lib/auth';
+import { authOptions } from '@/lib/auth';
+
+export const dynamic = 'force-dynamic';
 
 /**
- * Test API route that returns the current session information
- * This helps verify that authentication is working correctly
- * 
- * @returns A response containing the session information
+ * Test endpoint for authentication
+ * @param req - The incoming request
+ * @returns JSON response with authentication status
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     
+    if (!session) {
+      return NextResponse.json({
+        authenticated: false,
+        message: 'Not authenticated'
+      });
+    }
+    
     return NextResponse.json({
-      success: true,
-      authenticated: !!session,
-      session: session ? {
-        user: {
-          id: session.user.id,
-          name: session.user.name,
-          email: session.user.email,
-          image: session.user.image
-        },
-        expires: session.expires
-      } : null
+      authenticated: true,
+      message: 'Authenticated',
+      user: session.user,
+      accessToken: session.accessToken
     });
   } catch (error) {
-    console.error('Error in test API route:', error);
+    console.error('Error in auth test route:', error);
     return NextResponse.json(
-      { success: false, message: 'Error in test API route', error: (error as Error).message },
+      { error: 'Failed to test authentication', details: String(error) },
       { status: 500 }
     );
   }

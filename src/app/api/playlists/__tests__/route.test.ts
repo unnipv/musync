@@ -44,7 +44,11 @@ describe('Playlist API Routes', () => {
       
       (Playlist.find as jest.Mock).mockResolvedValue(mockPlaylists);
       
-      const response = await GET();
+      // Create a mock NextRequest
+      const mockRequest = new NextRequest(new URL('http://localhost:3000/api/playlists'));
+      
+      // Pass the mock request to GET
+      const response = await GET(mockRequest);
       const data = await response.json();
       
       expect(getServerSession).toHaveBeenCalled();
@@ -62,7 +66,11 @@ describe('Playlist API Routes', () => {
       // Mock unauthenticated session
       (getServerSession as jest.Mock).mockResolvedValue(null);
       
-      const response = await GET();
+      // Create a mock NextRequest
+      const mockRequest = new NextRequest(new URL('http://localhost:3000/api/playlists'));
+      
+      // Pass the mock request to GET
+      const response = await GET(mockRequest);
       const data = await response.json();
       
       expect(getServerSession).toHaveBeenCalled();

@@ -35,28 +35,34 @@ export async function POST(
     
     await dbConnect();
     
-    // Find the playlist and ensure it belongs to the current user
+    // Find the playlist by ID and ensure it belongs to the current user
     const playlist = await Playlist.findOne({
       _id: params.id,
       userId: session.user.id
     });
     
     if (!playlist) {
-      return NextResponse.json({ error: 'Playlist not found' }, { status: 404 });
+      return NextResponse.json({
+        success: false,
+        message: 'Playlist not found or you do not have permission to modify it'
+      }, { status: 404 });
     }
     
-    // Remove the platform from platformData
-    if (playlist.platformData && playlist.platformData.length > 0) {
-      playlist.platformData = playlist.platformData.filter(
-        (p: any) => p.platform !== platform
-      );
+    // Find and remove the platform from platformData array
+    const platformIndex = playlist.platformData?.findIndex(p => p.platform === platform);
+    if (platformIndex !== undefined && platformIndex >= 0 && playlist.platformData) {
+      playlist.platformData.splice(platformIndex, 1);
     }
     
-    // Clear platform-specific IDs
+    // Clear platform-specific IDs using type-safe approach
     if (platform === 'spotify') {
-      playlist.spotifyId = null;
+      // Use type assertion or update through platformData
+      const playlistDoc = playlist as any;
+      playlistDoc.spotifyId = null;
     } else if (platform === 'youtube') {
-      playlist.youtubeId = null;
+      // Use type assertion or update through platformData
+      const playlistDoc = playlist as any;
+      playlistDoc.youtubeId = null;
     }
     
     // Save the updated playlist

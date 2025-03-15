@@ -1,6 +1,8 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import authOptions from '@/lib/auth';
+import { authOptions } from '@/lib/auth';
 
 /**
  * Test API route that returns the current session information

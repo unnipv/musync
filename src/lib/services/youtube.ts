@@ -177,7 +177,7 @@ export class YouTubeService {
       let nextPageToken: string | undefined = undefined;
       
       do {
-        const response = await this.youtube.playlistItems.list({
+        const response: youtube_v3.Schema$PlaylistItemListResponse = await this.youtube.playlistItems.list({
           part: ['snippet', 'contentDetails'],
           playlistId,
           maxResults: 50,
@@ -188,7 +188,7 @@ export class YouTubeService {
           items.push(...response.data.items);
         }
         
-        nextPageToken = response.data.nextPageToken;
+        nextPageToken = response.data.nextPageToken || undefined;
       } while (nextPageToken);
       
       return items;
@@ -420,15 +420,15 @@ export class YouTubeService {
       }
       
       // Check if playlist is already on YouTube
-      const youtubeData = playlist.platformData.find(
-        (data: any) => data.platform === 'youtube'
+      const youtubeData = playlist.platformData?.find(
+        (data) => data.platform === 'youtube'
       );
       
       let youtubePlaylistId: string;
       
       if (youtubeData) {
         // Update existing YouTube playlist
-        youtubePlaylistId = youtubeData.platformId;
+        youtubePlaylistId = youtubeData.id || youtubeData.platformId || '';
         
         // Update playlist details
         await this.youtube.playlists.update({
@@ -436,7 +436,7 @@ export class YouTubeService {
           requestBody: {
             id: youtubePlaylistId,
             snippet: {
-              title: playlist.name,
+              title: playlist.name || 'My Playlist',
               description: playlist.description || ''
             },
             status: {
@@ -455,17 +455,20 @@ export class YouTubeService {
       } else {
         // Create new YouTube playlist
         const newPlaylist = await this.createPlaylist(
-          playlist.name,
+          playlist.name || 'My Playlist',
           playlist.description || '',
-          playlist.isPublic
+          playlist.isPublic || false
         );
         
         youtubePlaylistId = newPlaylist.id || '';
         
         // Add platform data to Musync playlist
+        if (!playlist.platformData) {
+          playlist.platformData = [];
+        }
         playlist.platformData.push({
           platform: 'youtube',
-          platformId: youtubePlaylistId,
+          id: youtubePlaylistId,
           lastSyncedAt: new Date(),
           syncStatus: 'synced'
         });
@@ -493,17 +496,30 @@ export class YouTubeService {
         }
         
         // Add video to playlist
-        await this.addVideoToPlaylist(youtubePlaylistId, videoId);
+        if (videoId) {
+          await this.addVideoToPlaylist(youtubePlaylistId, videoId);
+        }
       }
       
       // Update sync status
-      const platformIndex = playlist.platformData.findIndex(
-        (data: any) => data.platform === 'youtube'
+      const platformIndex = playlist.platformData?.findIndex(
+        (data) => data.platform === 'youtube'
       );
       
-      if (platformIndex >= 0) {
-        playlist.platformData[platformIndex].syncStatus = 'synced';
-        playlist.platformData[platformIndex].lastSyncedAt = new Date();
+      if (platformIndex !== undefined && platformIndex >= 0 && playlist.platformData) {
+        if (!playlist.platformData[platformIndex].syncStatus) {
+          // Add syncStatus property if it doesn't exist
+          const updatedPlatformData = {
+            ...playlist.platformData[platformIndex],
+            syncStatus: 'synced',
+            lastSyncedAt: new Date()
+          };
+          
+          playlist.platformData[platformIndex] = updatedPlatformData;
+        } else {
+          playlist.platformData[platformIndex].syncStatus = 'synced';
+          playlist.platformData[platformIndex].lastSyncedAt = new Date();
+        }
       }
       
       await playlist.save();
@@ -516,13 +532,25 @@ export class YouTubeService {
       const playlist = await Playlist.findById(playlistId);
       
       if (playlist) {
-        const platformIndex = playlist.platformData.findIndex(
-          (data: any) => data.platform === 'youtube'
+        const platformIndex = playlist.platformData?.findIndex(
+          (data) => data.platform === 'youtube'
         );
         
-        if (platformIndex >= 0) {
-          playlist.platformData[platformIndex].syncStatus = 'failed';
-          playlist.platformData[platformIndex].syncError = (error as Error).message;
+        if (platformIndex !== undefined && platformIndex >= 0 && playlist.platformData) {
+          if (!playlist.platformData[platformIndex].syncStatus) {
+            // Add syncStatus property if it doesn't exist
+            const updatedPlatformData = {
+              ...playlist.platformData[platformIndex],
+              syncStatus: 'failed',
+              syncError: (error as Error).message
+            };
+            
+            playlist.platformData[platformIndex] = updatedPlatformData;
+          } else {
+            playlist.platformData[platformIndex].syncStatus = 'failed';
+            playlist.platformData[platformIndex].syncError = (error as Error).message;
+          }
+          
           await playlist.save();
         }
       }

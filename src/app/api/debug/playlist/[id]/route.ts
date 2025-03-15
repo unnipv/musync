@@ -1,19 +1,28 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth';
+import { connectToDatabase } from '@/lib/mongodb';
 import { ObjectId } from 'mongodb';
-import authOptions from '@/lib/auth';
-import dbConnect from '@/lib/mongoose';
-import Playlist from '@/lib/models/playlist';
+
+interface Playlist {
+  _id: ObjectId;
+  userId: ObjectId;
+  name: string;
+  description?: string;
+  isPublic: boolean;
+  tracks: any[];
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 /**
- * Debug endpoint to get raw playlist data
- * 
+ * Retrieves detailed information about a specific playlist for debugging purposes
  * @param request - The incoming request
- * @param params - The route parameters containing the playlist ID
- * @returns The raw playlist data
+ * @param params - Object containing the playlist ID
+ * @returns JSON response with playlist details or error
  */
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -23,13 +32,15 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
-    if (!ObjectId.isValid(params.id)) {
+    const { id } = params;
+    
+    if (!ObjectId.isValid(id)) {
       return NextResponse.json({ error: 'Invalid playlist ID' }, { status: 400 });
     }
     
-    await dbConnect();
+    const { db } = await connectToDatabase();
     
-    const playlist = await Playlist.findById(params.id).lean();
+    const playlist = await db.collection('playlists').findOne({ _id: new ObjectId(id) }) as Playlist;
     
     if (!playlist) {
       return NextResponse.json({ error: 'Playlist not found' }, { status: 404 });
@@ -39,17 +50,32 @@ export async function GET(
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
     
+    // Get user info
+    const user = await db.collection('users').findOne({ _id: playlist.userId });
+    
+    // Get platform connections
+    const platforms = await db.collection('userPlatforms')
+      .find({ userId: playlist.userId })
+      .toArray();
+    
     return NextResponse.json({
-      playlist: JSON.parse(JSON.stringify(playlist)),
-      hasTracksProp: !!playlist.tracks,
-      trackCount: playlist.tracks?.length || 0,
-      hasSongsProp: !!playlist.songs,
-      songCount: playlist.songs?.length || 0
+      playlist,
+      user: {
+        _id: user?._id,
+        name: user?.name,
+        email: user?.email,
+        image: user?.image
+      },
+      platforms: platforms.map(p => ({
+        platform: p.platform,
+        platformId: p.platformId,
+        connected: !!p.platformId
+      }))
     });
   } catch (error) {
-    console.error('Error fetching playlist:', error);
+    console.error('Error in debug playlist route:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch playlist' },
+      { error: 'Failed to retrieve playlist details', details: String(error) },
       { status: 500 }
     );
   }

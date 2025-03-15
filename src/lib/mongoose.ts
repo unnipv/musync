@@ -19,7 +19,7 @@ interface MongooseCache {
  * in development. This prevents connections growing exponentially
  * during API Route usage.
  */
-let globalWithMongoose = global as typeof globalThis & {
+const globalWithMongoose = global as typeof globalThis & {
   mongoose?: MongooseCache;
 };
 
@@ -43,9 +43,7 @@ async function dbConnect() {
       bufferCommands: false,
     };
 
-    cached!.promise = mongoose.connect(MONGODB_URI!, opts).then((mongoose) => {
-      return mongoose;
-    });
+    cached!.promise = (mongoose.connect(MONGODB_URI!, opts) as unknown) as Promise<typeof mongoose>;
   }
   cached!.conn = await cached!.promise;
   return cached!.conn;
