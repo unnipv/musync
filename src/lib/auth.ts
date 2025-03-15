@@ -64,7 +64,7 @@ async function refreshSpotifyAccessToken(token: JWT) {
 /**
  * Configuration options for NextAuth
  */
-export const authOptions: NextAuthOptions = {
+const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
       id: 'credentials',
@@ -106,6 +106,14 @@ export const authOptions: NextAuthOptions = {
         params: {
           scope: 'user-read-email user-read-private playlist-read-private playlist-read-collaborative'
         }
+      },
+      profile(profile) {
+        return {
+          id: profile.id,
+          name: profile.display_name || profile.id,
+          email: profile.email,
+          image: profile.images?.[0]?.url
+        };
       }
     }),
     GoogleProvider({
@@ -206,4 +214,6 @@ export const authOptions: NextAuthOptions = {
     error: '/login'
   },
   debug: process.env.NODE_ENV === 'development'
-}; 
+};
+
+export { authOptions as default, authOptions }; 
