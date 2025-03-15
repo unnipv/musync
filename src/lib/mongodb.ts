@@ -51,7 +51,7 @@ async function connectDB() {
  * Connects to MongoDB using MongoDB native driver
  * @returns MongoDB connection and db instance
  */
-export async function connectToDatabase() {
+async function connectToDatabase() {
   const client = await MongoClient.connect(MONGODB_URI);
   const db = client.db();
   return { client, db };
