@@ -5,6 +5,7 @@ import mongoose from "mongoose";
 import User from "@/models/User";
 import { NextResponse } from 'next/server';
 import { ObjectId } from 'mongodb';
+import { connectToDatabase } from '@/lib/mongodb';
 
 /**
  * Configuration options for NextAuth
@@ -105,10 +106,10 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       console.log("Session callback - token:", token);
       
-      // Add user ID to session
+      // Add user ID to session with fallback to empty string to satisfy type check
       session.user = {
         ...session.user,
-        id: token.id || token.userId || token.sub
+        id: token.id || token.userId || token.sub || ''
       };
       
       if (token.accessToken) {
