@@ -9,14 +9,32 @@ export interface IUser extends Document {
   email: string;
   password?: string;
   image?: string;
-  spotifyId?: string;
-  youtubeId?: string;
+  platforms: IPlatform[];
   createdAt: Date;
   updatedAt: Date;
 }
 
 /**
- * Schema for User model
+ * Platform schema for connected music services
+ */
+const PlatformSchema = new Schema({
+  name: {
+    type: String,
+    required: true,
+    enum: ['spotify', 'youtube']
+  },
+  userId: {
+    type: String,
+    required: true
+  },
+  lastSyncedAt: {
+    type: Date,
+    default: null
+  }
+}, { _id: false });
+
+/**
+ * User schema
  */
 const UserSchema = new Schema<IUser>(
   {
@@ -39,6 +57,11 @@ const UserSchema = new Schema<IUser>(
     image: {
       type: String,
     },
+    platforms: {
+      type: [PlatformSchema],
+      default: []
+    },
+    // For backward compatibility
     spotifyId: {
       type: String,
     },
@@ -87,5 +110,36 @@ UserSchema.methods.comparePassword = async function(candidatePassword: string): 
   }
 };
 
-// Check if the model already exists to prevent overwriting during hot reloads
-export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema); 
+/**
+ * Pre-save hook to update the updatedAt field
+ */
+UserSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  
+  // If spotifyId exists but not in platforms array, add it
+  if (this.spotifyId && !this.platforms.some(p => p.name === 'spotify')) {
+    this.platforms.push({
+      name: 'spotify',
+      userId: this.spotifyId,
+      lastSyncedAt: null
+    });
+  }
+  
+  // If youtubeId exists but not in platforms array, add it
+  if (this.youtubeId && !this.platforms.some(p => p.name === 'youtube')) {
+    this.platforms.push({
+      name: 'youtube',
+      userId: this.youtubeId,
+      lastSyncedAt: null
+    });
+  }
+  
+  next();
+});
+
+/**
+ * User model
+ */
+export const User = mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
+
+export default User; 

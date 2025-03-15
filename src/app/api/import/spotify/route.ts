@@ -1,229 +1,217 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import authOptions from '@/lib/auth';
-import dbConnect from '@/lib/mongoose';
-import Playlist from '@/lib/models/playlist';
-import User from '@/lib/models/user';
+import { connectToDatabase } from '@/lib/mongodb';
+import { ObjectId } from 'mongodb';
 
 /**
- * Fetches playlists from Spotify API
+ * Fetches playlists from Spotify for the authenticated user
  * 
- * @param accessToken - The Spotify access token
- * @returns Array of Spotify playlists
+ * @param req - The incoming request
+ * @returns A response with the user's Spotify playlists
  */
-async function fetchSpotifyPlaylists(accessToken: string) {
-  const response = await fetch("https://api.spotify.com/v1/me/playlists?limit=50", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    console.error("Spotify API error:", error);
-    throw new Error(`Spotify API error: ${error.error?.message || "Unknown error"}`);
-  }
-
-  return response.json();
-}
-
-/**
- * Fetches tracks for a Spotify playlist
- * 
- * @param accessToken - The Spotify access token
- * @param playlistId - The Spotify playlist ID
- * @returns Array of tracks in the playlist
- */
-async function fetchPlaylistTracks(accessToken: string, playlistId: string) {
-  const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    console.error("Spotify API error fetching tracks:", error);
-    throw new Error(`Spotify API error: ${error.error?.message || "Unknown error"}`);
-  }
-
-  return response.json();
-}
-
-/**
- * Handles GET requests to import playlists from Spotify
- * 
- * @param request - The incoming request
- * @returns A response containing the imported playlists
- */
-export async function GET(request: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     
-    if (!session || !session.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    console.log('Session in Spotify import:', { 
+      userId: session?.user?.id, 
+      hasAccessToken: !!session?.accessToken 
+    });
     
-    if (!session.accessToken) {
+    if (!session || !session.user?.id) {
       return NextResponse.json(
-        { error: 'Spotify access token not available. Please reconnect your Spotify account.' },
+        { error: 'Unauthorized', success: false },
         { status: 401 }
       );
     }
     
-    await dbConnect();
-    
-    // Get the user to check if they have a Spotify ID
-    const user = await User.findById(session.user.id);
-    
-    if (!user || !user.spotifyId) {
+    if (!session.accessToken) {
       return NextResponse.json(
-        { error: 'Spotify account not connected. Please connect your Spotify account first.' },
+        { error: 'No Spotify access token available', success: false },
         { status: 400 }
       );
     }
     
-    // Fetch playlists from Spotify
-    const spotifyData = await fetchSpotifyPlaylists(session.accessToken);
+    const { db } = await connectToDatabase();
     
-    if (!spotifyData.items || !Array.isArray(spotifyData.items)) {
+    // Check if the user has a Spotify connection
+    const userPlatform = await db.collection('userPlatforms').findOne({
+      userId: new ObjectId(session.user.id),
+      platform: 'spotify'
+    });
+    
+    if (!userPlatform) {
       return NextResponse.json(
-        { error: 'Failed to fetch playlists from Spotify' },
-        { status: 500 }
+        { error: 'Spotify account not connected', success: false },
+        { status: 400 }
       );
     }
     
-    // Process each playlist
-    const importResults = {
-      total: spotifyData.items.length,
-      imported: 0,
-      skipped: 0,
-      failed: 0,
-    };
-    
-    for (const spotifyPlaylist of spotifyData.items) {
-      try {
-        // Skip playlists that the user doesn't own
-        if (spotifyPlaylist.owner.id !== user.spotifyId) {
-          importResults.skipped++;
-          continue;
+    // Fetch playlists from Spotify API
+    try {
+      const spotifyResponse = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`
+        }
+      });
+      
+      if (!spotifyResponse.ok) {
+        const errorData = await spotifyResponse.json();
+        console.error('Spotify API error:', errorData);
+        
+        if (spotifyResponse.status === 401) {
+          return NextResponse.json(
+            { error: 'Spotify access token expired. Please reconnect your account.', success: false },
+            { status: 401 }
+          );
         }
         
-        // Check if playlist already exists
-        const existingPlaylist = await Playlist.findOne({
-          userId: user._id,
-          "platformData.platformId": spotifyPlaylist.id,
-          "platformData.platform": "spotify",
-        });
-        
-        if (existingPlaylist) {
-          importResults.skipped++;
-          continue;
-        }
-        
-        // Fetch tracks for this playlist
-        const tracksData = await fetchPlaylistTracks(
-          session.accessToken,
-          spotifyPlaylist.id
-        );
-        
-        // Map tracks to our format
-        const tracks = tracksData.items.map((item: any) => {
-          const track = item.track;
-          if (!track) return null;
-          
-          return {
-            title: track.name,
-            artist: track.artists.map((a: any) => a.name).join(", "),
-            album: track.album?.name || "",
-            duration: track.duration_ms,
-            platform: "spotify",
-            platformId: track.id,
-            imageUrl: track.album?.images?.[0]?.url || "",
-          };
-        }).filter(Boolean);
-        
-        // Create new playlist
-        const newPlaylist = new Playlist({
-          name: spotifyPlaylist.name,
-          description: spotifyPlaylist.description || "",
-          userId: user._id,
-          tracks: tracks,
-          platformData: [
-            {
-              platform: "spotify",
-              platformId: spotifyPlaylist.id,
-              lastSyncedAt: new Date(),
-            },
-          ],
-        });
-        
-        await newPlaylist.save();
-        importResults.imported++;
-      } catch (error) {
-        console.error("Error importing playlist:", error);
-        importResults.failed++;
+        throw new Error(`Spotify API error: ${errorData.error?.message || 'Unknown error'}`);
       }
+      
+      const spotifyData = await spotifyResponse.json();
+      
+      return NextResponse.json({
+        success: true,
+        playlists: spotifyData.items || []
+      });
+    } catch (error) {
+      console.error('Error fetching Spotify playlists:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch Spotify playlists. Please try again.', success: false },
+        { status: 500 }
+      );
     }
-    
-    return NextResponse.json({
-      message: `Imported ${importResults.imported} playlists (${importResults.skipped} skipped, ${importResults.failed} failed)`,
-      results: importResults,
-    });
   } catch (error) {
-    console.error("Error in Spotify import:", error);
+    console.error('Error in Spotify import API:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to import playlists" },
+      { error: 'An unexpected error occurred', success: false },
       { status: 500 }
     );
   }
 }
 
 /**
- * Handles POST requests to import a Spotify playlist
- * @param request - The incoming request object
- * @returns A response containing the imported playlist
+ * Imports a playlist from Spotify
+ * 
+ * @param req - The incoming request with Spotify playlist details
+ * @returns A response indicating the success of the import
  */
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     
-    if (!session || !session.user.id) {
+    if (!session || !session.user?.id) {
       return NextResponse.json(
-        { success: false, message: 'Unauthorized' },
+        { error: 'Unauthorized', success: false },
         { status: 401 }
       );
     }
     
-    const { spotifyPlaylistId } = await request.json();
-    
-    if (!spotifyPlaylistId) {
+    if (!session.accessToken) {
       return NextResponse.json(
-        { success: false, message: 'Spotify playlist ID is required' },
+        { error: 'No Spotify access token available', success: false },
         { status: 400 }
       );
     }
     
-    await dbConnect();
+    const body = await req.json();
+    const { spotifyPlaylistId } = body;
     
-    const spotifyService = new SpotifyService(session.user.id);
-    await spotifyService.initialize();
+    if (!spotifyPlaylistId) {
+      return NextResponse.json(
+        { error: 'Spotify playlist ID is required', success: false },
+        { status: 400 }
+      );
+    }
     
-    const playlist = await spotifyService.importPlaylist(spotifyPlaylistId);
+    const { db } = await connectToDatabase();
     
-    return NextResponse.json({
-      success: true,
-      message: 'Playlist imported successfully',
-      playlist
+    // Check if the user has a Spotify connection
+    const userPlatform = await db.collection('userPlatforms').findOne({
+      userId: new ObjectId(session.user.id),
+      platform: 'spotify'
     });
+    
+    if (!userPlatform) {
+      return NextResponse.json(
+        { error: 'Spotify account not connected', success: false },
+        { status: 400 }
+      );
+    }
+    
+    // Fetch playlist details from Spotify
+    try {
+      // Get playlist details
+      const playlistResponse = await fetch(`https://api.spotify.com/v1/playlists/${spotifyPlaylistId}`, {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`
+        }
+      });
+      
+      if (!playlistResponse.ok) {
+        const errorData = await playlistResponse.json();
+        throw new Error(`Spotify API error: ${errorData.error?.message || 'Unknown error'}`);
+      }
+      
+      const playlistData = await playlistResponse.json();
+      
+      // Get playlist tracks
+      const tracksResponse = await fetch(`https://api.spotify.com/v1/playlists/${spotifyPlaylistId}/tracks`, {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`
+        }
+      });
+      
+      if (!tracksResponse.ok) {
+        const errorData = await tracksResponse.json();
+        throw new Error(`Spotify API error: ${errorData.error?.message || 'Unknown error'}`);
+      }
+      
+      const tracksData = await tracksResponse.json();
+      
+      // Format tracks for our database
+      const tracks = tracksData.items.map((item: any) => {
+        const track = item.track;
+        return {
+          title: track.name,
+          artist: track.artists.map((artist: any) => artist.name).join(', '),
+          album: track.album.name,
+          duration: Math.floor(track.duration_ms / 1000),
+          spotifyId: track.id,
+          spotifyUri: track.uri
+        };
+      });
+      
+      // Create a new playlist in our database
+      const result = await db.collection('playlists').insertOne({
+        userId: new ObjectId(session.user.id),
+        name: playlistData.name,
+        description: playlistData.description || '',
+        tracks,
+        source: 'spotify',
+        sourceId: spotifyPlaylistId,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+      
+      return NextResponse.json({
+        success: true,
+        message: 'Successfully imported playlist from Spotify',
+        playlistId: result.insertedId
+      });
+    } catch (error) {
+      console.error('Error importing Spotify playlist:', error);
+      return NextResponse.json(
+        { error: 'Failed to import Spotify playlist. Please try again.', success: false },
+        { status: 500 }
+      );
+    }
   } catch (error) {
-    console.error('Error importing Spotify playlist:', error);
+    console.error('Error in Spotify import API:', error);
     return NextResponse.json(
-      { 
-        success: false, 
-        message: 'Failed to import Spotify playlist', 
-        error: (error as Error).message 
-      },
+      { error: 'An unexpected error occurred', success: false },
       { status: 500 }
     );
   }

@@ -19,13 +19,27 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
+    console.log('Profile API - Session:', {
+      userId: session.userId,
+      hasAccessToken: !!session.accessToken,
+      user: session.user
+    });
+    
     await dbConnect();
     
     // Get user data
     const user = await User.findById(session.userId).lean();
     
+    console.log('Profile API - User from DB:', {
+      found: !!user,
+      id: user?._id,
+      email: user?.email,
+      hasPlatforms: !!user?.platforms,
+      platformsCount: user?.platforms?.length || 0
+    });
+    
     if (!user) {
-      console.log('User not found in database, creating basic profile with session data:', session);
+      console.log('User not found in database, creating basic profile with session data');
       // If user not found in database but we have a session, create a basic user record
       return NextResponse.json({
         name: session.user.name || 'User',
@@ -41,6 +55,10 @@ export async function GET(request: NextRequest) {
       .select('name description tracks')
       .lean();
     
+    console.log('Profile API - Playlists:', {
+      count: playlists.length
+    });
+    
     // Format playlist data for the response
     const formattedPlaylists = playlists.map(playlist => ({
       _id: playlist._id.toString(),
@@ -50,7 +68,9 @@ export async function GET(request: NextRequest) {
     }));
     
     // Ensure platforms is always an array
-    const platforms = user.platforms || [];
+    const platforms = Array.isArray(user.platforms) ? user.platforms : [];
+    
+    console.log('Profile API - Platforms to return:', platforms);
     
     return NextResponse.json({
       name: user.name || 'User',

@@ -125,9 +125,37 @@ Note: The server must be running for this test to work.
 
 The project is configured for easy deployment on Vercel:
 
+### Deploying to Vercel
+
 1. Push your code to a GitHub repository.
-2. Import the project in the Vercel dashboard.
-3. Vercel will automatically detect the Next.js configuration and deploy the application.
+2. Visit [Vercel](https://vercel.com) and sign up or log in.
+3. Click "New Project" and import your GitHub repository.
+4. Configure the project:
+   - Framework Preset: Next.js
+   - Root Directory: ./
+   - Build Command: npm run build
+   - Output Directory: .next
+
+5. Add the following environment variables in the Vercel dashboard:
+   - `MONGODB_URI`: Your MongoDB connection string
+   - `NEXTAUTH_URL`: Your Vercel deployment URL (e.g., https://your-app.vercel.app)
+   - `NEXTAUTH_SECRET`: A secure random string for NextAuth
+   - `SPOTIFY_CLIENT_ID`: Your Spotify Developer API client ID
+   - `SPOTIFY_CLIENT_SECRET`: Your Spotify Developer API client secret
+   - `GOOGLE_CLIENT_ID`: Your Google Developer API client ID
+   - `GOOGLE_CLIENT_SECRET`: Your Google Developer API client secret
+
+6. Click "Deploy" and wait for the deployment to complete.
+
+### Important Notes for Deployment
+
+1. Update your OAuth redirect URIs in the Spotify and Google Developer dashboards to include your Vercel deployment URL:
+   - For Spotify: `https://your-app.vercel.app/api/auth/callback/spotify`
+   - For Google: `https://your-app.vercel.app/api/auth/callback/google`
+
+2. Make sure your MongoDB database is accessible from Vercel's servers. If you're using MongoDB Atlas, you may need to whitelist Vercel's IP addresses or allow access from anywhere.
+
+3. After deployment, test the authentication and API functionality to ensure everything works correctly.
 
 ## License
 
