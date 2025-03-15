@@ -3,6 +3,8 @@ import SpotifyProvider from "next-auth/providers/spotify";
 import { NextAuthOptions } from "next-auth";
 import mongoose from "mongoose";
 import User from "@/models/User";
+import { NextResponse } from 'next/server';
+import { ObjectId } from 'mongodb';
 
 /**
  * Configuration options for NextAuth
@@ -120,5 +122,55 @@ export const authOptions: NextAuthOptions = {
   debug: process.env.NODE_ENV === "development",
 };
 
-const handler = NextAuth(authOptions);
+interface SpotifyProfile {
+  id: string;
+  display_name?: string;
+  email?: string;
+  images?: { url: string }[];
+}
+
+async function handler(req: Request) {
+  // Handle NextAuth request
+  const response = await NextAuth(authOptions)(req);
+
+  // If this is a sign-in callback from Spotify
+  if (req.url?.includes('callback/spotify') && response.status === 200) {
+    try {
+      const data = await response.json();
+      const { profile, account } = data;
+
+      if (profile && account) {
+        // Store the connection in the database
+        const { db } = await connectToDatabase();
+        await db.collection('userPlatforms').updateOne(
+          {
+            userId: new ObjectId(data.user.id),
+            platform: 'spotify'
+          },
+          {
+            $set: {
+              accounts: {
+                platform: "spotify",
+                platformId: (profile as SpotifyProfile).id,
+                accessToken: account?.access_token,
+                refreshToken: account?.refresh_token,
+                expiresAt: account?.expires_at
+              },
+              updatedAt: new Date()
+            },
+            $setOnInsert: {
+              createdAt: new Date()
+            }
+          },
+          { upsert: true }
+        );
+      }
+    } catch (error) {
+      console.error('Error storing Spotify connection:', error);
+    }
+  }
+
+  return response;
+}
+
 export { handler as GET, handler as POST }; 

@@ -1,7 +1,7 @@
-import NextAuth, { DefaultSession } from "next-auth";
-import { JWT } from "next-auth/jwt";
+import 'next-auth';
+import { JWT } from 'next-auth/jwt';
 
-declare module "next-auth" {
+declare module 'next-auth' {
   /**
    * Extends the built-in session types
    */
@@ -10,7 +10,7 @@ declare module "next-auth" {
     error?: string;
     provider?: string;
     user: {
-      id?: string;
+      id: string;
       name?: string | null;
       email?: string | null;
       image?: string | null;
@@ -21,12 +21,21 @@ declare module "next-auth" {
    * Extends the built-in user types
    */
   interface User {
+    id: string;
+    name?: string | null;
+    email?: string | null;
+    image?: string | null;
+  }
+
+  interface Profile {
     id?: string;
-    _id?: string;
+    display_name?: string;
+    email?: string;
+    images?: { url: string }[];
   }
 }
 
-declare module "next-auth/jwt" {
+declare module 'next-auth/jwt' {
   /**
    * Extends the built-in JWT types
    */
@@ -34,9 +43,9 @@ declare module "next-auth/jwt" {
     accessToken?: string;
     refreshToken?: string;
     accessTokenExpires?: number;
-    id?: string;
-    userId?: string;
     error?: string;
     provider?: string;
+    userId?: string;
+    id?: string;
   }
 } 
