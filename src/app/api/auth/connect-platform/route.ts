@@ -226,4 +226,220 @@ interface TrackData {
   addedAt: Date;
   spotifyId?: string;
   youtubeId?: string;
+}
+
+/**
+ * Handles GET requests for connecting a playlist to a streaming platform
+ * This is used as a callback after OAuth authentication
+ * 
+ * @param req - The incoming request with platform and playlist details
+ * @returns Redirects to the playlist page or connect page
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    
+    if (!session || !session.user) {
+      return NextResponse.redirect(new URL('/api/auth/signin', req.url));
+    }
+    
+    // Get query parameters
+    const url = new URL(req.url);
+    const platform = url.searchParams.get('platform');
+    const playlistId = url.searchParams.get('playlistId');
+    
+    if (!platform || !playlistId) {
+      return NextResponse.redirect(new URL('/playlists', req.url));
+    }
+    
+    if (!['spotify', 'youtube'].includes(platform)) {
+      return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect`, req.url));
+    }
+    
+    // For Spotify, we need to get the user's Spotify ID from the session
+    if (platform === 'spotify' && session.accessToken) {
+      try {
+        // Get the Spotify user profile
+        const spotifyResponse = await fetch('https://api.spotify.com/v1/me', {
+          headers: {
+            Authorization: `Bearer ${session.accessToken}`
+          }
+        });
+        
+        if (!spotifyResponse.ok) {
+          console.error('Failed to get Spotify profile:', await spotifyResponse.text());
+          return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect?error=spotify_profile`, req.url));
+        }
+        
+        const spotifyProfile = await spotifyResponse.json();
+        const spotifyUserId = spotifyProfile.id;
+        
+        // Connect the platform to the user
+        await connectToDatabase();
+        
+        // Update user with platform connection
+        const user = await User.findById(session.user.id);
+        
+        if (!user) {
+          return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect?error=user_not_found`, req.url));
+        }
+        
+        // Check if platform is already connected
+        const platformExists = user.platforms?.some((p: { name: string }) => p.name === platform);
+        
+        if (user.platforms && platformExists) {
+          // Update existing platform connection
+          const platformIndex = user.platforms.findIndex((p: { name: string }) => p.name === platform);
+          user.platforms[platformIndex].userId = spotifyUserId;
+          user.platforms[platformIndex].lastSyncedAt = new Date();
+        } else {
+          // Initialize platforms array if it doesn't exist
+          if (!user.platforms) {
+            user.platforms = [];
+          }
+          
+          // Add new platform connection
+          user.platforms.push({
+            name: platform,
+            userId: spotifyUserId,
+            lastSyncedAt: new Date()
+          });
+        }
+        
+        // For backward compatibility
+        if (platform === 'spotify') {
+          user.spotifyId = spotifyUserId;
+        }
+        
+        await user.save();
+        
+        // Connect the platform to the playlist
+        const playlist = await Playlist.findById(playlistId);
+        
+        if (playlist && playlist.userId.toString() === session.user.id) {
+          // Check if platformData exists
+          if (!playlist.platformData) {
+            playlist.platformData = [];
+          }
+          
+          // Check if this platform is already connected to the playlist
+          const platformDataExists = playlist.platformData.some(
+            (p: { platform: string }) => p.platform === platform
+          );
+          
+          if (platformDataExists) {
+            // Update existing platform data
+            const platformIndex = playlist.platformData.findIndex(
+              (p: { platform: string }) => p.platform === platform
+            );
+            
+            playlist.platformData[platformIndex].syncStatus = 'pending';
+            playlist.platformData[platformIndex].lastSyncedAt = new Date();
+          } else {
+            // Create a new Spotify playlist
+            try {
+              // Check if this playlist was imported from Spotify
+              if (playlist.spotifyId) {
+                console.log(`Playlist was imported from Spotify with ID: ${playlist.spotifyId}`);
+                
+                // Use the existing Spotify playlist ID
+                const spotifyPlaylistId = playlist.spotifyId;
+                
+                // Add platform data with the existing Spotify playlist ID
+                playlist.platformData.push({
+                  platform,
+                  id: spotifyPlaylistId,
+                  platformId: spotifyPlaylistId,
+                  syncStatus: 'pending',
+                  lastSyncedAt: new Date()
+                });
+                
+                // Also update the playlist's spotifyId field if it's different
+                if (playlist.spotifyId !== spotifyPlaylistId) {
+                  playlist.spotifyId = spotifyPlaylistId;
+                }
+                
+                console.log(`Using existing Spotify playlist ID ${spotifyPlaylistId} for Musync playlist ${playlistId}`);
+              } else {
+                // Create a new Spotify playlist
+                const createPlaylistResponse = await fetch(
+                  `https://api.spotify.com/v1/users/${spotifyUserId}/playlists`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `Bearer ${session.accessToken}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      name: playlist.title || playlist.name || 'My Playlist',
+                      description: playlist.description || '',
+                      public: false
+                    })
+                  }
+                );
+                
+                if (!createPlaylistResponse.ok) {
+                  const errorText = await createPlaylistResponse.text();
+                  console.error('Failed to create Spotify playlist:', errorText);
+                  return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect?error=spotify_create_playlist&details=${encodeURIComponent(errorText)}`, req.url));
+                }
+                
+                const spotifyPlaylist = await createPlaylistResponse.json();
+                const spotifyPlaylistId = spotifyPlaylist.id;
+                
+                // Add new platform data with the created playlist ID
+                playlist.platformData.push({
+                  platform,
+                  id: spotifyPlaylistId,
+                  platformId: spotifyPlaylistId,
+                  syncStatus: 'pending',
+                  lastSyncedAt: new Date()
+                });
+                
+                console.log(`Created Spotify playlist with ID ${spotifyPlaylistId} for Musync playlist ${playlistId}`);
+              }
+            } catch (error) {
+              console.error('Error creating Spotify playlist:', error);
+              return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect?error=spotify_create_playlist&details=${encodeURIComponent(String(error))}`, req.url));
+            }
+          }
+          
+          await playlist.save();
+          
+          // Trigger an immediate sync
+          try {
+            const syncResponse = await fetch(`/api/playlists/${playlistId}/sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                platforms: [platform]
+              })
+            });
+            
+            if (!syncResponse.ok) {
+              console.error('Failed to trigger sync:', await syncResponse.text());
+            }
+          } catch (error) {
+            console.error('Error triggering sync:', error);
+          }
+        }
+        
+        // Redirect to the playlist page with success message
+        return NextResponse.redirect(new URL(`/playlists/${playlistId}?connected=${platform}`, req.url));
+      } catch (error) {
+        console.error('Error connecting Spotify:', error);
+        return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect?error=connection_failed`, req.url));
+      }
+    }
+    
+    // For YouTube, similar implementation would go here
+    
+    // Default redirect back to the connect page
+    return NextResponse.redirect(new URL(`/playlists/${playlistId}/connect`, req.url));
+  } catch (error) {
+    console.error('Error in connect-platform GET handler:', error);
+    return NextResponse.redirect(new URL('/playlists', req.url));
+  }
 } 

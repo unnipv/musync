@@ -2,7 +2,69 @@ import SpotifyWebApi from 'spotify-web-api-node';
 import User from '../models/user';
 import Playlist from '../models/playlist';
 import { ObjectId } from 'mongodb';
-import { ITrack, SpotifyTrack, convertSpotifyTrack } from '@/types/track';
+import { ITrack } from '@/types/track';
+
+// Define interfaces for Spotify API response types
+interface SpotifyArtist {
+  id: string;
+  name: string;
+  uri: string;
+}
+
+interface SpotifyAlbum {
+  id: string;
+  name: string;
+  images?: Array<{ url: string; height: number; width: number }>;
+}
+
+interface SpotifyTrack {
+  id: string;
+  name: string;
+  artists: SpotifyArtist[];
+  album?: SpotifyAlbum;
+  duration_ms?: number;
+  uri?: string;
+}
+
+// Define interfaces for Spotify API response objects
+interface TrackObjectFull {
+  id: string;
+  name: string;
+  artists: Array<{ id: string; name: string; uri?: string }>;
+  album: {
+    id: string;
+    name: string;
+    images?: Array<{ url: string; height: number; width: number }>;
+  };
+  duration_ms?: number;
+  uri?: string;
+}
+
+interface ArtistObjectSimplified {
+  id: string;
+  name: string;
+  uri?: string;
+}
+
+interface PlaylistObjectFull {
+  id: string;
+  name: string;
+  description?: string;
+  public?: boolean;
+  tracks: {
+    items: Array<{
+      track: TrackObjectFull;
+      added_at?: string;
+    }>;
+    total: number;
+  };
+}
+
+interface AlbumObjectSimplified {
+  id: string;
+  name: string;
+  images?: Array<{ url: string; height: number; width: number }>;
+}
 
 /**
  * Spotify service for interacting with the Spotify API
@@ -204,7 +266,27 @@ export class SpotifyService {
   async searchTracks(query: string) {
     try {
       const response = await this.spotifyApi.searchTracks(query);
-      return response.body.tracks?.items || [];
+      const searchResults = await response;
+      
+      if (!searchResults.body.tracks) {
+        return [];
+      }
+      
+      return searchResults.body.tracks.items.map((track: any) => ({
+        id: track.id,
+        name: track.name,
+        artists: track.artists.map((artist: any) => ({
+          id: artist.id,
+          name: artist.name,
+          uri: artist.uri
+        })),
+        album: track.album ? {
+          id: track.album.id,
+          name: track.album.name
+        } : undefined,
+        duration_ms: track.duration_ms,
+        uri: track.uri
+      }));
     } catch (error) {
       console.error('Error searching Spotify tracks:', error);
       throw new Error('Failed to search Spotify tracks');
@@ -460,7 +542,7 @@ export async function getPlaylist(playlistId: string, accessToken: string) {
     const tracks: SpotifyTrack[] = [];
     let offset = 0;
     const limit = 100;
-    let total = playlistData.tracks.total;
+    const total = playlistData.tracks.total;
     
     while (offset < total) {
       const tracksResponse = await spotify.getPlaylistTracks(playlistId, {
@@ -476,9 +558,10 @@ export async function getPlaylist(playlistId: string, accessToken: string) {
           tracks.push({
             id: item.track.id,
             name: item.track.name,
-            artists: item.track.artists.map(artist => ({
+            artists: item.track.artists.map((artist: ArtistObjectSimplified) => ({
               id: artist.id,
-              name: artist.name
+              name: artist.name,
+              uri: artist.uri
             })),
             album: item.track.album ? {
               id: item.track.album.id,
@@ -535,10 +618,11 @@ export async function addTracksToPlaylist(
         } else {
           // Search for the track on Spotify
           const searchQuery = `track:${track.title} artist:${track.artist}`;
-          const searchResponse = await spotify.searchTracks(searchQuery, { limit: 1 });
+          const searchResponse = spotify.searchTracks(searchQuery);
+          const searchResults = await searchResponse;
           
-          if (searchResponse.body.tracks && searchResponse.body.tracks.items.length > 0) {
-            const spotifyTrack = searchResponse.body.tracks.items[0];
+          if (searchResults.body.tracks && searchResults.body.tracks.items.length > 0) {
+            const spotifyTrack = searchResults.body.tracks.items[0];
             tracksToAdd.push(spotifyTrack.uri);
             addedCount++;
           }
@@ -649,12 +733,15 @@ export async function createPlaylist(
     const meResponse = await spotify.getMe();
     const userId = meResponse.body.id;
     
-    const response = await spotify.createPlaylist(userId, name, {
+    const response = await spotify.createPlaylist(userId, {
+      name,
       description,
       public: isPublic
     });
     
-    return { id: response.body.id, success: true };
+    const playlist = await response;
+    
+    return { id: playlist.id, success: true };
   } catch (error) {
     console.error('Error creating Spotify playlist:', error);
     return { id: '', success: false };
@@ -669,7 +756,7 @@ export async function createPlaylist(
  * @param limit - Maximum number of results to return
  * @returns Search results
  */
-export async function searchTracks(
+export async function searchTracksWithToken(
   query: string,
   accessToken: string,
   limit = 10
@@ -677,18 +764,20 @@ export async function searchTracks(
   try {
     const spotify = createSpotifyClient(accessToken);
     
-    const searchResponse = await spotify.searchTracks(query, { limit });
+    const searchResponse = await spotify.searchTracks(query);
+    const searchResults = await searchResponse;
     
-    if (!searchResponse.body.tracks || !searchResponse.body.tracks.items) {
+    if (!searchResults.body.tracks) {
       return [];
     }
     
-    return searchResponse.body.tracks.items.map(track => convertSpotifyTrack({
+    return searchResults.body.tracks.items.map((track: any) => ({
       id: track.id,
       name: track.name,
-      artists: track.artists.map(artist => ({
+      artists: track.artists.map((artist: any) => ({
         id: artist.id,
-        name: artist.name
+        name: artist.name,
+        uri: artist.uri
       })),
       album: track.album ? {
         id: track.album.id,
@@ -702,4 +791,12 @@ export async function searchTracks(
     console.error('Error searching Spotify tracks:', error);
     return [];
   }
+}
+
+function convertArtist(artist: any): SpotifyArtist {
+  return {
+    id: artist.id,
+    name: artist.name,
+    uri: artist.uri
+  };
 } 

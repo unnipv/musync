@@ -22,29 +22,49 @@ export default function TrackList({ tracks, playlistId, isOwner, onTracksChange 
    * @returns A consistent ID string
    */
   const getTrackKey = (track: PlaylistTrack, index?: number) => {
+    // For display/React key purposes, create a reliable key
     return track.id || track._id?.toString() || `${track.title}-${track.artist}-${index}`;
   };
 
   /**
-   * Removes a track from the playlist
-   * @param trackId - The ID of the track to remove
+   * Gets the best ID to use for database operations
+   * @param track - The track to get an ID for
+   * @returns The best ID to use for database operations
    */
-  const removeTrack = async (trackId: string) => {
+  const getTrackDbId = (track: PlaylistTrack) => {
+    // For database operations, prefer MongoDB ID
+    return track._id?.toString() || track.id;
+  };
+
+  /**
+   * Removes a track from the playlist
+   * @param track - The track to remove
+   * @param index - The index of the track in the list
+   */
+  const removeTrack = async (track: PlaylistTrack, index: number) => {
+    // Get the MongoDB ID if available, otherwise use our generated key
+    const trackId = getTrackDbId(track) || getTrackKey(track, index);
+    
     if (!trackId) {
       setError("Invalid track ID");
       return;
     }
     
     try {
-      setLoading(trackId);
+      setLoading(getTrackKey(track, index));
       setError(null);
+      
+      console.log(`Removing track: ${track.title} with ID: ${trackId}`);
       
       const response = await fetch(`/api/playlists/${playlistId}/tracks`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ trackIds: [trackId] })
+        body: JSON.stringify({ 
+          trackIds: [trackId],
+          trackTitle: track.title // Send the title as well for fallback matching
+        })
       });
 
       if (!response.ok) {
@@ -54,9 +74,7 @@ export default function TrackList({ tracks, playlistId, isOwner, onTracksChange 
 
       // Update local state if callback provided
       if (onTracksChange) {
-        const updatedTracks = tracks.filter(track => {
-          return getTrackKey(track) !== trackId;
-        });
+        const updatedTracks = tracks.filter((t, idx) => idx !== index);
         onTracksChange(updatedTracks);
       }
     } catch (err) {
@@ -115,7 +133,7 @@ export default function TrackList({ tracks, playlistId, isOwner, onTracksChange 
               </span>
               {isOwner && (
                 <button
-                  onClick={() => removeTrack(getTrackKey(track, index))}
+                  onClick={() => removeTrack(track, index)}
                   disabled={loading === getTrackKey(track, index)}
                   className="text-red-500 hover:text-red-400 transition-colors disabled:opacity-50 font-vt323"
                 >

@@ -154,17 +154,19 @@ export class YouTubeService {
    * @returns The YouTube playlist
    */
   async getPlaylist(playlistId: string) {
-    try {
-      const response = await this.youtube.playlists.list({
-        part: ['snippet', 'contentDetails', 'status'],
-        id: [playlistId]
-      });
-      
-      return response.data.items?.[0];
-    } catch (error) {
-      console.error('Error getting YouTube playlist:', error);
-      throw new Error('Failed to get YouTube playlist');
+    await this.initialize();
+    
+    const response = await this.youtube.playlists.list({
+      part: ['snippet', 'contentDetails'],
+      id: [playlistId],
+      auth: this.accessToken
+    });
+    
+    if (!response.data.items || response.data.items.length === 0) {
+      throw new Error('Playlist not found');
     }
+    
+    return response.data.items[0];
   }
 
   /**
@@ -559,6 +561,170 @@ export class YouTubeService {
       throw new Error('Failed to sync playlist to YouTube');
     }
   }
+
+  /**
+   * Adds tracks to a playlist
+   * @param playlistId - The YouTube playlist ID
+   * @param videoIds - Array of video IDs to add
+   */
+  async addTracksToPlaylist(playlistId: string, videoIds: string[]) {
+    await this.initialize();
+    
+    const results = [];
+    for (const videoId of videoIds) {
+      const result = await this.addVideoToPlaylist(playlistId, videoId);
+      results.push(result);
+    }
+    return results;
+  }
+
+  /**
+   * Removes tracks from a playlist
+   * @param playlistId - The YouTube playlist ID
+   * @param playlistItemIds - Array of playlist item IDs to remove
+   */
+  async removeTracksFromPlaylist(playlistId: string, playlistItemIds: string[]) {
+    await this.initialize();
+    
+    const results = [];
+    for (const itemId of playlistItemIds) {
+      const result = await this.removeVideoFromPlaylist(itemId);
+      results.push(result);
+    }
+    return results;
+  }
+
+  /**
+   * Updates playlist details
+   * @param playlistId - The YouTube playlist ID
+   * @param title - New playlist title
+   * @param description - New playlist description
+   * @param isPublic - Whether the playlist should be public
+   */
+  async updatePlaylistDetails(
+    playlistId: string,
+    title: string,
+    description: string,
+    isPublic: boolean
+  ) {
+    await this.initialize();
+    
+    const response = await this.youtube.playlists.update({
+      part: ['snippet', 'status'],
+      requestBody: {
+        id: playlistId,
+        snippet: {
+          title,
+          description
+        },
+        status: {
+          privacyStatus: isPublic ? 'public' : 'private'
+        }
+      },
+      auth: this.accessToken
+    });
+    
+    return response.data;
+  }
 }
 
-export default YouTubeService; 
+export default YouTubeService;
+
+/**
+ * Gets a YouTube playlist by ID
+ * 
+ * @param playlistId - The YouTube playlist ID
+ * @param accessToken - The access token for API authentication
+ * @returns The playlist data
+ */
+export async function getPlaylist(playlistId: string, accessToken: string) {
+  const youtube = google.youtube('v3');
+  
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  auth.setCredentials({ access_token: accessToken });
+  
+  const response = await youtube.playlists.list({
+    part: ['snippet', 'contentDetails'],
+    id: [playlistId],
+    auth
+  });
+  
+  if (!response.data.items || response.data.items.length === 0) {
+    throw new Error('Playlist not found');
+  }
+  
+  return response.data.items[0];
+}
+
+/**
+ * Adds tracks to a YouTube playlist
+ * 
+ * @param playlistId - The YouTube playlist ID
+ * @param tracks - The tracks to add to the playlist
+ * @param accessToken - The access token for API authentication
+ * @returns Result of the operation
+ */
+export async function addTracksToPlaylist(
+  playlistId: string, 
+  tracks: ITrack[],
+  accessToken: string
+): Promise<{ success: boolean; count: number }> {
+  const youtube = google.youtube('v3');
+  
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  auth.setCredentials({ access_token: accessToken });
+  
+  try {
+    let addedCount = 0;
+    
+    // Add tracks one by one
+    for (const track of tracks) {
+      let videoId = track.platformId;
+      
+      // If track doesn't have a YouTube ID, search for it
+      if (!videoId && track.title) {
+        const searchQuery = `${track.artist} - ${track.title}`;
+        const searchResponse = await youtube.search.list({
+          part: ['snippet'],
+          q: searchQuery,
+          type: ['video'],
+          maxResults: 1,
+          auth
+        });
+        
+        if (searchResponse.data.items && searchResponse.data.items.length > 0) {
+          videoId = searchResponse.data.items[0].id?.videoId;
+        }
+      }
+      
+      if (videoId) {
+        await youtube.playlistItems.insert({
+          part: ['snippet'],
+          requestBody: {
+            snippet: {
+              playlistId,
+              resourceId: {
+                kind: 'youtube#video',
+                videoId
+              }
+            }
+          },
+          auth
+        });
+        
+        addedCount++;
+      }
+    }
+    
+    return { success: true, count: addedCount };
+  } catch (error) {
+    console.error('Error adding tracks to YouTube playlist:', error);
+    return { success: false, count: 0 };
+  }
+} 

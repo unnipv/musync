@@ -3,7 +3,15 @@ import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { connectToDatabase } from '@/lib/mongodb';
 import Playlist from '@/models/Playlist';
-import { synchronizeWithAllPlatforms } from '@/lib/services/syncService';
+import { synchronizeWithAllPlatforms, synchronizeWithPlatform } from '@/lib/services/syncService';
+import { SpotifyService } from '@/lib/services/spotify';
+import { YouTubeService } from '@/lib/services/youtube';
+import { 
+  createSpotifyPlaylist, 
+  createYouTubePlaylist,
+  addTracksToSpotify,
+  addTracksToYouTube 
+} from '@/lib/services/platformServices';
 
 /**
  * Handles POST requests to synchronize a playlist between platforms
@@ -27,7 +35,7 @@ export async function POST(req: NextRequest) {
 
     // Parse request body
     const body = await req.json();
-    const { playlistId } = body;
+    const { playlistId, platforms } = body;
 
     if (!playlistId) {
       return NextResponse.json(
@@ -49,15 +57,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Check if playlist has platform IDs
-    const hasPlatformIds = playlist.spotifyId || playlist.youtubeId;
-    if (!hasPlatformIds) {
-      return NextResponse.json(
-        { error: 'Playlist is not connected to any platforms' },
-        { status: 400 }
-      );
-    }
-
     // Get access tokens from session
     const userAccessTokens: Record<string, string> = {};
     
@@ -68,12 +67,263 @@ export async function POST(req: NextRequest) {
     if (session.user.googleAccessToken) {
       userAccessTokens.youtube = session.user.googleAccessToken;
     }
-
-    // Perform synchronization
-    const syncResults = await synchronizeWithAllPlatforms(
-      playlistId,
-      userAccessTokens
-    );
+    
+    let syncResults: Record<string, any> = {};
+    
+    // Perform synchronization based on requested platforms
+    if (!platforms || platforms === 'all') {
+      try {
+        // Check which platforms need connection
+        const needsSpotify = !playlist.spotifyId;
+        const needsYoutube = !playlist.youtubeId;
+        
+        // Create playlists on platforms that need it
+        if (needsSpotify && userAccessTokens.spotify) {
+          console.log(`Creating Spotify playlist for ${playlist.name}`);
+          
+          const spotifyService = new SpotifyService(userAccessTokens.spotify);
+          const createResult = await createSpotifyPlaylist(
+            spotifyService,
+            playlist.name,
+            playlist.description || `Playlist synchronized from Musync`,
+            playlist.isPublic
+          );
+          
+          if (createResult.success && createResult.playlistId) {
+            // Update playlist with Spotify ID
+            await Playlist.findByIdAndUpdate(playlistId, {
+              $set: { spotifyId: createResult.playlistId }
+            });
+            
+            // Add tracks to the new Spotify playlist
+            const addResult = await addTracksToSpotify(
+              spotifyService,
+              createResult.playlistId,
+              playlist.tracks
+            );
+            
+            syncResults.spotify = {
+              success: addResult.success,
+              created: true,
+              added: addResult.tracksAdded || 0,
+              unavailableTracks: addResult.unavailableTracks || [],
+              playlistUrl: createResult.playlistUrl
+            };
+          } else {
+            syncResults.spotify = {
+              success: false,
+              error: createResult.error || 'Failed to create Spotify playlist'
+            };
+          }
+        }
+        
+        if (needsYoutube && userAccessTokens.youtube) {
+          console.log(`Creating YouTube playlist for ${playlist.name}`);
+          
+          const youtubeService = new YouTubeService(userAccessTokens.youtube);
+          const createResult = await createYouTubePlaylist(
+            youtubeService,
+            playlist.name,
+            playlist.description || `Playlist synchronized from Musync`,
+            playlist.isPublic
+          );
+          
+          if (createResult.success && createResult.playlistId) {
+            // Update playlist with YouTube ID
+            await Playlist.findByIdAndUpdate(playlistId, {
+              $set: { youtubeId: createResult.playlistId }
+            });
+            
+            // Add tracks to the new YouTube playlist
+            const addResult = await addTracksToYouTube(
+              youtubeService,
+              createResult.playlistId,
+              playlist.tracks
+            );
+            
+            syncResults.youtube = {
+              success: addResult.success,
+              created: true,
+              added: addResult.tracksAdded || 0,
+              unavailableTracks: addResult.unavailableTracks || [],
+              playlistUrl: createResult.playlistUrl
+            };
+          } else {
+            syncResults.youtube = {
+              success: false,
+              error: createResult.error || 'Failed to create YouTube playlist'
+            };
+          }
+        }
+        
+        // Sync between existing platforms
+        if ((playlist.spotifyId || needsSpotify) && (playlist.youtubeId || needsYoutube)) {
+          // Reload the playlist to get updated platform IDs
+          const updatedPlaylist = await Playlist.findById(playlistId);
+          if (!updatedPlaylist) {
+            return NextResponse.json(
+              { error: 'Playlist not found after creation' },
+              { status: 404 }
+            );
+          }
+          
+          // Sync between platforms
+          const allResults = await synchronizeWithAllPlatforms(
+            playlistId,
+            userAccessTokens
+          );
+          
+          // Combine results
+          syncResults = {
+            ...syncResults,
+            ...allResults
+          };
+          
+          // Update last synced timestamp
+          await Playlist.findByIdAndUpdate(playlistId, {
+            $set: { lastSyncedAt: new Date() }
+          });
+        }
+      } catch (error) {
+        console.error('Error in all-platform sync:', error);
+        return NextResponse.json(
+          { 
+            error: 'Failed to synchronize with all platforms',
+            details: error instanceof Error ? error.message : 'Unknown error'
+          },
+          { status: 500 }
+        );
+      }
+    } else if (platforms === 'spotify') {
+      // Ensure we have a Spotify access token
+      if (!userAccessTokens.spotify) {
+        return NextResponse.json(
+          { error: 'No Spotify access token available' },
+          { status: 400 }
+        );
+      }
+      
+      // Create Spotify playlist if needed
+      if (!playlist.spotifyId) {
+        console.log(`Creating Spotify playlist for ${playlist.name}`);
+        
+        const spotifyService = new SpotifyService(userAccessTokens.spotify);
+        const createResult = await createSpotifyPlaylist(
+          spotifyService,
+          playlist.name,
+          playlist.description || `Playlist synchronized from Musync`,
+          playlist.isPublic
+        );
+        
+        if (createResult.success && createResult.playlistId) {
+          // Update playlist with Spotify ID
+          await Playlist.findByIdAndUpdate(playlistId, {
+            $set: { spotifyId: createResult.playlistId }
+          });
+          
+          // Add tracks to the new Spotify playlist
+          const addResult = await addTracksToSpotify(
+            spotifyService,
+            createResult.playlistId,
+            playlist.tracks
+          );
+          
+          syncResults.spotify = {
+            success: addResult.success,
+            created: true,
+            added: addResult.tracksAdded || 0,
+            unavailableTracks: addResult.unavailableTracks || [],
+            playlistUrl: createResult.playlistUrl
+          };
+        } else {
+          syncResults.spotify = {
+            success: false,
+            error: createResult.error || 'Failed to create Spotify playlist'
+          };
+        }
+      } else {
+        // Sync existing Spotify playlist
+        const result = await synchronizeWithPlatform(
+          playlistId,
+          'spotify',
+          userAccessTokens.spotify
+        );
+        
+        syncResults.spotify = result;
+      }
+      
+      // Update last synced timestamp
+      await Playlist.findByIdAndUpdate(playlistId, {
+        $set: { lastSyncedAt: new Date() }
+      });
+    } else if (platforms === 'youtube') {
+      // Ensure we have a YouTube access token
+      if (!userAccessTokens.youtube) {
+        return NextResponse.json(
+          { error: 'No YouTube access token available' },
+          { status: 400 }
+        );
+      }
+      
+      // Create YouTube playlist if needed
+      if (!playlist.youtubeId) {
+        console.log(`Creating YouTube playlist for ${playlist.name}`);
+        
+        const youtubeService = new YouTubeService(userAccessTokens.youtube);
+        const createResult = await createYouTubePlaylist(
+          youtubeService,
+          playlist.name,
+          playlist.description || `Playlist synchronized from Musync`,
+          playlist.isPublic
+        );
+        
+        if (createResult.success && createResult.playlistId) {
+          // Update playlist with YouTube ID
+          await Playlist.findByIdAndUpdate(playlistId, {
+            $set: { youtubeId: createResult.playlistId }
+          });
+          
+          // Add tracks to the new YouTube playlist
+          const addResult = await addTracksToYouTube(
+            youtubeService,
+            createResult.playlistId,
+            playlist.tracks
+          );
+          
+          syncResults.youtube = {
+            success: addResult.success,
+            created: true,
+            added: addResult.tracksAdded || 0,
+            unavailableTracks: addResult.unavailableTracks || [],
+            playlistUrl: createResult.playlistUrl
+          };
+        } else {
+          syncResults.youtube = {
+            success: false,
+            error: createResult.error || 'Failed to create YouTube playlist'
+          };
+        }
+      } else {
+        // Sync existing YouTube playlist
+        const result = await synchronizeWithPlatform(
+          playlistId,
+          'youtube',
+          userAccessTokens.youtube
+        );
+        
+        syncResults.youtube = result;
+      }
+      
+      // Update last synced timestamp
+      await Playlist.findByIdAndUpdate(playlistId, {
+        $set: { lastSyncedAt: new Date() }
+      });
+    } else {
+      return NextResponse.json(
+        { error: `Invalid platform: ${platforms}` },
+        { status: 400 }
+      );
+    }
 
     // Check if synchronization was successful
     const hasErrors = Object.values(syncResults).some(result => !result.success);

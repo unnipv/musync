@@ -5,6 +5,65 @@ import dbConnect from '@/lib/mongoose';
 import Playlist from '@/models/Playlist';
 import { authOptions } from '@/lib/auth';
 
+// Define the type for the request body
+interface DeleteTracksRequestBody {
+  trackIds: string[];
+  trackTitle?: string | null;
+}
+
+/**
+ * Helper function to filter tracks for removal
+ * @param track - The track to check
+ * @param trackIdsToRemove - Array of track IDs to remove
+ * @param titleToMatch - Optional title to match against
+ * @returns true if the track should be kept, false if it should be removed
+ */
+const removeTrackFilter = (track: any, trackIdsToRemove: string[], titleToMatch: string | null) => {
+  const trackIdStr = track._id.toString();
+  const trackId = track.id || trackIdStr;
+  const trackTitleInDb = track.title;
+  
+  // Check if this track should be removed
+  let shouldRemove = false;
+  
+  // Try to match by MongoDB ID first
+  if (trackIdsToRemove.includes(trackIdStr)) {
+    shouldRemove = true;
+    console.log(`Track ${trackIdStr} (${trackTitleInDb}) matched by MongoDB ID`);
+  }
+  // Then try to match by custom ID if it exists
+  else if (track.id && trackIdsToRemove.includes(track.id)) {
+    shouldRemove = true;
+    console.log(`Track ${track.id} (${trackTitleInDb}) matched by custom ID`);
+  }
+  // Try to match by title if provided
+  else if (titleToMatch && trackTitleInDb && 
+          (trackTitleInDb.toLowerCase() === titleToMatch.toLowerCase() || 
+           trackTitleInDb.toLowerCase().includes(titleToMatch.toLowerCase()) || 
+           titleToMatch.toLowerCase().includes(trackTitleInDb.toLowerCase()))) {
+    shouldRemove = true;
+    console.log(`Track ${trackIdStr} (${trackTitleInDb}) matched by title comparison with "${titleToMatch}"`);
+  }
+  // Finally, try to match by title in trackIds
+  else {
+    for (const id of trackIdsToRemove) {
+      // Try to extract title from composite keys like "Title-Artist-Index"
+      const possibleTitle = id.split('-')[0];
+      if (id.includes(trackTitleInDb) || 
+          trackTitleInDb.includes(possibleTitle) || 
+          possibleTitle.includes(trackTitleInDb)) {
+        shouldRemove = true;
+        console.log(`Track ${trackIdStr} (${trackTitleInDb}) matched by title similarity with ${id}`);
+        break;
+      }
+    }
+  }
+  
+  const shouldKeep = !shouldRemove;
+  console.log(`Track ${trackIdStr} (${trackTitleInDb}): ${shouldKeep ? 'keeping' : 'REMOVING'}`);
+  return shouldKeep;
+};
+
 /**
  * Handles POST requests to add tracks to a playlist
  * Also handles DELETE requests sent as POST
@@ -139,7 +198,7 @@ export async function POST(
 async function handleDeleteRequest(
   request: NextRequest,
   params: { id: string },
-  parsedBody?: any
+  parsedBody?: DeleteTracksRequestBody
 ) {
   console.log('Processing DELETE request for playlist:', params.id);
   
@@ -166,10 +225,17 @@ async function handleDeleteRequest(
     }
     
     // Get trackIds from the parsed body if provided, otherwise parse the request
-    let trackIds;
+    let trackIds: string[] = [];
+    let trackTitle: string | null = null;
+    
     if (parsedBody && parsedBody.trackIds) {
       trackIds = parsedBody.trackIds;
       console.log('Using trackIds from parsed body:', trackIds);
+      
+      if (parsedBody.trackTitle) {
+        trackTitle = parsedBody.trackTitle;
+        console.log('Using trackTitle from parsed body:', trackTitle);
+      }
     } else {
       try {
         // Check if the request has a body before trying to parse it
@@ -258,13 +324,7 @@ async function handleDeleteRequest(
     console.log('Current tracks:', playlist.tracks.map((t: any) => ({ id: t._id.toString(), title: t.title })));
     
     // Remove tracks from the playlist
-    playlist.tracks = playlist.tracks.filter((track: any) => {
-      const trackIdStr = track._id.toString();
-      const trackId = track.id || trackIdStr;
-      const shouldKeep = !trackIds.includes(trackIdStr) && !trackIds.includes(trackId);
-      console.log(`Track ${trackIdStr}/${trackId} (${track.title}): ${shouldKeep ? 'keeping' : 'removing'}`);
-      return shouldKeep;
-    });
+    playlist.tracks = playlist.tracks.filter(track => removeTrackFilter(track, trackIds, trackTitle));
     
     // Count removed tracks
     const removedCount = originalTrackCount - playlist.tracks.length;
@@ -339,6 +399,7 @@ export async function DELETE(
     console.log('Track ID from query parameter:', trackId);
     
     let trackIds: string[] = [];
+    let trackTitle: string | null = null;
     
     if (trackId) {
       // Single track ID from query parameter
@@ -366,6 +427,11 @@ export async function DELETE(
             if (body.trackIds && Array.isArray(body.trackIds)) {
               trackIds = body.trackIds;
               console.log('Using trackIds from request body:', trackIds);
+            }
+            
+            if (body.trackTitle) {
+              trackTitle = body.trackTitle;
+              console.log('Using trackTitle from request body:', trackTitle);
             }
           }
         }
@@ -411,13 +477,7 @@ export async function DELETE(
     console.log('Current tracks:', playlist.tracks.map((t: any) => ({ id: t._id.toString(), title: t.title })));
     
     // Remove tracks from the playlist
-    playlist.tracks = playlist.tracks.filter((track: any) => {
-      const trackIdStr = track._id.toString();
-      const trackId = track.id || trackIdStr;
-      const shouldKeep = !trackIds.includes(trackIdStr) && !trackIds.includes(trackId);
-      console.log(`Track ${trackIdStr}/${trackId} (${track.title}): ${shouldKeep ? 'keeping' : 'removing'}`);
-      return shouldKeep;
-    });
+    playlist.tracks = playlist.tracks.filter(track => removeTrackFilter(track, trackIds, trackTitle));
     
     // Count removed tracks
     const removedCount = originalTrackCount - playlist.tracks.length;

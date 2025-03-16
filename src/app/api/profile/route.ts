@@ -40,29 +40,64 @@ export async function GET(req: NextRequest) {
       );
     }
     
-    // Get connected platforms
-    const platforms = await db.collection('userPlatforms')
-      .find({ userId: new ObjectId(session.user.id) })
-      .toArray();
+    // Check platform connections from user accounts
+    const platforms = [];
+    
+    // Check if user has Spotify connection
+    const spotifyAccount = user.accounts?.find(
+      (acc: any) => acc.platform === 'spotify'
+    );
+    
+    if (spotifyAccount) {
+      platforms.push({
+        name: 'spotify',
+        userId: spotifyAccount.platformId,
+        connected: true,
+        lastSyncedAt: spotifyAccount.lastSyncedAt || null
+      });
+    }
+    
+    // Check if user has Google/YouTube connection
+    const googleAccount = user.accounts?.find(
+      (acc: any) => acc.platform === 'google'
+    );
+    
+    if (googleAccount) {
+      platforms.push({
+        name: 'youtube',
+        userId: googleAccount.platformId,
+        connected: true,
+        lastSyncedAt: googleAccount.lastSyncedAt || null
+      });
+    }
     
     // Get user playlists count
     const playlistsCount = await db.collection('playlists')
       .countDocuments({ userId: new ObjectId(session.user.id) });
     
+    // Get user playlists
+    const playlists = await db.collection('playlists')
+      .find({ userId: new ObjectId(session.user.id) })
+      .project({
+        _id: 1,
+        name: 1,
+        title: 1,
+        description: 1,
+        tracks: { $size: "$tracks" }
+      })
+      .toArray();
+    
     return NextResponse.json({
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        image: user.image
-      },
-      platforms: platforms.map(p => ({
-        platform: p.platform,
-        connected: !!p.platformId
-      })),
-      stats: {
-        playlists: playlistsCount
-      }
+      name: user.name,
+      email: user.email,
+      image: user.image || null,
+      platforms,
+      playlists: playlists.map((p: any) => ({
+        _id: p._id,
+        name: p.title || p.name,
+        description: p.description || '',
+        trackCount: p.tracks || 0
+      }))
     });
   } catch (error) {
     console.error('Error fetching profile:', error);

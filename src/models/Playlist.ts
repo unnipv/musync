@@ -1,16 +1,31 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 /**
+ * Interface for platform-specific data
+ */
+export interface PlatformData {
+  platform: string;
+  id: string;
+  platformId?: string;
+  lastSyncedAt?: Date;
+  syncStatus?: string;
+  syncError?: string;
+  url?: string;
+}
+
+/**
  * Interface representing a Playlist document in MongoDB
  */
 export interface IPlaylist extends Document {
   userId: mongoose.Types.ObjectId;
   name: string;
+  title?: string; // Alternative name field
   description?: string;
   isPublic: boolean;
   spotifyId?: string;
   youtubeId?: string;
   lastSyncedAt?: Date;
+  platformData?: PlatformData[];
   tracks: Array<{
     _id: mongoose.Types.ObjectId;
     title: string;
@@ -20,6 +35,8 @@ export interface IPlaylist extends Document {
     platformId?: string;
     platform?: string;
     uri?: string;
+    spotifyId?: string;
+    youtubeId?: string;
     imageUrl?: string;
     addedAt: Date;
   }>;
@@ -42,6 +59,10 @@ const PlaylistSchema: Schema = new Schema(
       required: true,
       trim: true,
     },
+    title: {
+      type: String,
+      trim: true,
+    },
     description: {
       type: String,
       trim: true,
@@ -61,6 +82,17 @@ const PlaylistSchema: Schema = new Schema(
     lastSyncedAt: {
       type: Date,
     },
+    platformData: [
+      {
+        platform: String,
+        id: String,
+        platformId: String,
+        lastSyncedAt: Date,
+        syncStatus: String,
+        syncError: String,
+        url: String,
+      }
+    ],
     tracks: [
       {
         title: {
@@ -76,6 +108,8 @@ const PlaylistSchema: Schema = new Schema(
         platformId: String,
         platform: String,
         uri: String,
+        spotifyId: String,
+        youtubeId: String,
         imageUrl: String,
         addedAt: {
           type: Date,

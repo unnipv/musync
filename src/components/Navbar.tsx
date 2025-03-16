@@ -27,22 +27,22 @@ const Navbar = () => {
   };
 
   return (
-    <nav className="bg-crt-bg border-b-2 border-phosphor text-phosphor p-4 shadow-md">
+    <nav className="bg-black border-b-2 border-green-500 text-green-500 p-4 shadow-[0_0_10px_#00ff00]">
       <div className="container mx-auto flex justify-between items-center">
-        <Link href="/" className="text-xl font-bold phosphor-text">
+        <Link href="/" className="text-xl font-bold text-green-500 font-vt323 crt-text">
           Musync
         </Link>
         
         <div className="flex items-center space-x-6">
-          <Link href="/playlists" className="hover:text-phosphor-light transition">
+          <Link href="/playlists" className="text-green-500 hover:text-green-400 transition font-vt323">
             Playlists
           </Link>
           
           {isAuthenticated ? (
             <div className="flex items-center space-x-4">
-              <Link href="/profile" className="flex items-center space-x-2 hover:text-phosphor-light transition">
+              <Link href="/profile" className="flex items-center space-x-2 text-green-500 hover:text-green-400 transition font-vt323">
                 {session?.user?.image ? (
-                  <div className="border-2 border-phosphor rounded-full">
+                  <div className="border-2 border-green-500 rounded-full">
                     <Image 
                       src={session.user.image} 
                       alt={session.user.name || 'User'} 
@@ -52,7 +52,7 @@ const Navbar = () => {
                     />
                   </div>
                 ) : (
-                  <div className="w-8 h-8 bg-phosphor-dark border-2 border-phosphor rounded-full flex items-center justify-center">
+                  <div className="w-8 h-8 bg-black border-2 border-green-500 rounded-full flex items-center justify-center font-vt323">
                     {session?.user?.name?.charAt(0) || 'U'}
                   </div>
                 )}
@@ -61,15 +61,15 @@ const Navbar = () => {
               
               <button 
                 onClick={handleLogout}
-                className="pixel-button"
+                className="bg-black border-2 border-green-500 text-green-500 hover:bg-green-900/20 font-bold px-4 py-1 rounded font-vt323 transition-colors shadow-[0_0_5px_#00ff00]"
               >
                 Logout
               </button>
             </div>
           ) : (
             <Link 
-              href="/api/auth/signin"
-              className="pixel-button"
+              href="/login"
+              className="bg-black border-2 border-green-500 text-green-500 hover:bg-green-900/20 font-bold px-4 py-1 rounded font-vt323 transition-colors shadow-[0_0_5px_#00ff00]"
             >
               Login
             </Link>

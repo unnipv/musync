@@ -47,6 +47,10 @@ export default async function PlaylistsPage() {
     redirect('/login');
   }
   
+  if (!session.user.id) {
+    redirect('/login');
+  }
+  
   const playlists = await getUserPlaylists(session.user.id);
   
   return (

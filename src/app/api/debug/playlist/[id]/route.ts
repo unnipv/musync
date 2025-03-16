@@ -66,7 +66,7 @@ export async function GET(
         email: user?.email,
         image: user?.image
       },
-      platforms: platforms.map(p => ({
+      platforms: platforms.map((p: any) => ({
         platform: p.platform,
         platformId: p.platformId,
         connected: !!p.platformId

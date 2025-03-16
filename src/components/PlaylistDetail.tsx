@@ -48,11 +48,43 @@ export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProp
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [spotifyUrl, setSpotifyUrl] = useState<string | null>(null);
+  const [youtubeUrl, setYoutubeUrl] = useState<string | null>(null);
 
   // Check if the playlist has connected platforms
   const hasSpotify = playlist.platformData?.some(p => p.platform === 'spotify');
   const hasYouTube = playlist.platformData?.some(p => p.platform === 'youtube');
   const hasConnectedPlatforms = hasSpotify || hasYouTube;
+
+  // Get platform-specific IDs for debugging
+  const spotifyData = playlist.platformData?.find(p => p.platform === 'spotify');
+  const spotifyId = spotifyData?.id || spotifyData?.platformId || undefined;
+  
+  const youtubeData = playlist.platformData?.find(p => p.platform === 'youtube');
+  const youtubeId = youtubeData?.id || youtubeData?.platformId || undefined;
+
+  // Check for connected parameter in the URL
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const connectedPlatform = url.searchParams.get('connected');
+    
+    if (connectedPlatform) {
+      setSyncMessage(`Successfully connected to ${connectedPlatform}. Your playlist will be synced soon.`);
+      
+      // Remove the connected parameter from the URL
+      url.searchParams.delete('connected');
+      window.history.replaceState({}, '', url.toString());
+      
+      // Clear the message after 5 seconds
+      const timer = setTimeout(() => {
+        setSyncMessage('');
+      }, 5000);
+      
+      return () => clearTimeout(timer);
+    }
+    
+    return undefined;
+  }, []);
 
   /**
    * Handles saving playlist details
@@ -110,6 +142,9 @@ export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProp
   const handleSync = async () => {
     setIsSyncing(true);
     setSyncMessage('Syncing playlist...');
+    setError(null);
+    setSpotifyUrl(null);
+    setYoutubeUrl(null);
 
     try {
       // Determine which platforms to sync with
@@ -137,14 +172,83 @@ export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProp
       }
 
       const result = await response.json();
-      setSyncMessage('Playlist synced successfully!');
+      console.log('Sync result:', result);
+      
+      // Check all possible places YouTube URL might be located in the response
+      if (result.youtubeUrl) {
+        setYoutubeUrl(result.youtubeUrl);
+      } else if (result.platformUrls?.youtube) {
+        setYoutubeUrl(result.platformUrls.youtube);
+      } else if (result.syncResult?.youtube?.youtubeUrl) {
+        setYoutubeUrl(result.syncResult.youtube.youtubeUrl);
+      } else if (result.syncResult?.youtube?.playlistUrl) {
+        setYoutubeUrl(result.syncResult.youtube.playlistUrl);
+      } else if (youtubeId) {
+        // Fallback to constructing URL from ID if available
+        setYoutubeUrl(`https://www.youtube.com/playlist?list=${youtubeId}`);
+      }
+      
+      // Show detailed sync results
+      if (result.syncResult) {
+        // Check for auth errors first
+        if (result.syncResult.spotify?.spotifyAuthError) {
+          setError(`Spotify authentication error: ${result.syncResult.spotify.message || 'Please reconnect your Spotify account.'}`);
+          setSyncMessage('');
+          return; // Exit early
+        }
+        
+        // Build a comprehensive sync message
+        let syncMessageText = '';
+        
+        // Check Spotify sync status
+        if (result.syncResult.spotify) {
+          const spotifyResult = result.syncResult.spotify;
+          syncMessageText += `Spotify sync ${spotifyResult.status || 'success'}: ${spotifyResult.message || 'Synchronized with Spotify'}`;
+          
+          // Set Spotify URL if available
+          if (spotifyResult.spotifyUrl) {
+            setSpotifyUrl(spotifyResult.spotifyUrl);
+          } else if (result.spotifyUrl) {
+            setSpotifyUrl(result.spotifyUrl);
+          } else if (result.platformUrls?.spotify) {
+            setSpotifyUrl(result.platformUrls.spotify);
+          } else if (spotifyId) {
+            // Fallback to constructing URL from ID
+            setSpotifyUrl(`https://open.spotify.com/playlist/${spotifyId}`);
+          }
+        }
+        
+        // Check YouTube sync status
+        if (result.syncResult.youtube) {
+          const youtubeResult = result.syncResult.youtube;
+          
+          // Add a separator if we already have Spotify info
+          if (syncMessageText) {
+            syncMessageText += ' | ';
+          }
+          
+          syncMessageText += `YouTube sync ${youtubeResult.status || 'success'}: ${youtubeResult.message || 'Synchronized with YouTube'}`;
+        }
+        
+        // If we have any sync info, set the message
+        if (syncMessageText) {
+          setSyncMessage(syncMessageText);
+        } else {
+          // Fallback generic message
+          setSyncMessage('Playlist synced successfully!');
+        }
+      } else {
+        // Fallback for older API format
+        setSyncMessage('Playlist synced successfully!');
+      }
+      
       setTimeout(() => {
-        setSyncMessage('');
         router.refresh();
-      }, 3000);
+      }, 5000);
     } catch (error) {
       console.error('Error syncing playlist:', error);
-      setSyncMessage(`Failed to sync playlist: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setError(`Failed to sync playlist: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setSyncMessage('');
     } finally {
       setIsSyncing(false);
     }
@@ -184,12 +288,53 @@ export default function PlaylistDetail({ playlist, isOwner }: PlaylistDetailProp
       {syncMessage && (
         <div className="mb-4 p-2 bg-green-900 text-green-100 rounded font-vt323">
           {syncMessage}
+          <div className="mt-2 flex flex-wrap gap-2">
+            {spotifyUrl && (
+              <a 
+                href={spotifyUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="inline-flex items-center bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded-md transition-colors"
+              >
+                <SpotifyIcon />
+                <span className="ml-2">Open in Spotify</span>
+              </a>
+            )}
+            {youtubeUrl && (
+              <a 
+                href={youtubeUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="inline-flex items-center bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded-md transition-colors"
+              >
+                <YouTubeIcon />
+                <span className="ml-2">Open in YouTube</span>
+              </a>
+            )}
+          </div>
         </div>
       )}
 
       {error && (
         <div className="mb-4 p-2 bg-red-900 text-red-100 rounded font-vt323">
           {error}
+          {error.includes('Spotify authentication') && (
+            <div className="mt-3">
+              <a 
+                href={`/api/auth/signin/spotify?callbackUrl=${encodeURIComponent(window.location.href)}`}
+                className="inline-flex items-center bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded-md transition-colors"
+              >
+                <SpotifyIcon />
+                <span className="ml-2">Reconnect Spotify</span>
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isOwner && hasSpotify && (
+        <div className="mb-4 p-2 bg-gray-800 text-green-300 rounded font-vt323 text-sm">
+          <p>Spotify Playlist ID: {spotifyId}</p>
         </div>
       )}
 

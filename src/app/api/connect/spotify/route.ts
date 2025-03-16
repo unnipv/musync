@@ -23,15 +23,26 @@ export async function GET(req: NextRequest) {
     
     const { db } = await connectToDatabase();
     
-    // Check if the user has a Spotify connection
-    const userPlatform = await db.collection('userPlatforms').findOne({
-      userId: new ObjectId(session.user.id),
-      platform: 'spotify'
+    // Check if the user has a Spotify account in the accounts array
+    const user = await db.collection('users').findOne({
+      _id: new ObjectId(session.user.id)
     });
     
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found', connected: false },
+        { status: 404 }
+      );
+    }
+    
+    // Check if the user has a Spotify account
+    const spotifyAccount = user.accounts?.find(
+      (acc: any) => acc.platform === 'spotify'
+    );
+    
     return NextResponse.json({
-      connected: !!userPlatform,
-      platformId: userPlatform?.platformId || null
+      connected: !!spotifyAccount,
+      platformId: spotifyAccount?.platformId || null
     });
   } catch (error) {
     console.error('Error checking Spotify connection:', error);
@@ -71,23 +82,37 @@ export async function POST(req: NextRequest) {
     
     const { db } = await connectToDatabase();
     
-    // Store the Spotify connection
-    await db.collection('userPlatforms').updateOne(
-      {
-        userId: new ObjectId(session.user.id),
-        platform: 'spotify'
-      },
+    // Update the user document with the Spotify account information
+    const result = await db.collection('users').updateOne(
+      { _id: new ObjectId(session.user.id) },
       {
         $set: {
-          platformId: spotifyUserId,
-          updatedAt: new Date()
-        },
-        $setOnInsert: {
-          createdAt: new Date()
+          "accounts.$[elem].platformId": spotifyUserId,
+          "accounts.$[elem].updatedAt": new Date()
         }
       },
-      { upsert: true }
+      {
+        arrayFilters: [{ "elem.platform": "spotify" }]
+      }
     );
+    
+    // If no document was modified, it means the user doesn't have a Spotify account yet
+    if (result.matchedCount === 0 || result.modifiedCount === 0) {
+      // Add a new Spotify account to the user
+      await db.collection('users').updateOne(
+        { _id: new ObjectId(session.user.id) },
+        {
+          $addToSet: {
+            accounts: {
+              platform: "spotify",
+              platformId: spotifyUserId,
+              updatedAt: new Date(),
+              createdAt: new Date()
+            }
+          }
+        }
+      );
+    }
     
     return NextResponse.json({
       success: true,

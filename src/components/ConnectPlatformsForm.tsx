@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { signIn } from 'next-auth/react';
 
@@ -39,79 +39,92 @@ export default function ConnectPlatformsForm({
   const spotifyConnection = existingConnections.find(conn => conn.platform === 'spotify');
   const youtubeConnection = existingConnections.find(conn => conn.platform === 'youtube');
   
-  /**
-   * Connects a playlist to a streaming platform
-   * 
-   * @param platform - The platform to connect (spotify or youtube)
-   */
-  const connectPlatform = async (platform: 'spotify' | 'youtube') => {
-    setIsConnecting(true);
-    setError('');
-    setMessage(`Connecting to ${platform}...`);
+  // Check for error parameters in the URL
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const errorParam = url.searchParams.get('error');
+    const errorDetails = url.searchParams.get('details');
     
-    try {
-      // For Spotify, we need to authenticate with Spotify first
-      if (platform === 'spotify') {
-        // Store the playlist ID in sessionStorage to retrieve after auth
-        sessionStorage.setItem('connecting_playlist_id', playlistId);
-        
-        // Redirect to Spotify auth
-        signIn('spotify', { 
-          callbackUrl: `/api/auth/connect-platform?platform=spotify&playlistId=${playlistId}` 
-        });
-        return;
+    if (errorParam) {
+      let errorMessage = '';
+      
+      switch (errorParam) {
+        case 'spotify_profile':
+          errorMessage = 'Failed to get Spotify profile. Please try again.';
+          break;
+        case 'user_not_found':
+          errorMessage = 'User not found. Please try signing in again.';
+          break;
+        case 'spotify_create_playlist':
+          errorMessage = 'Failed to create Spotify playlist. Please check your Spotify account permissions.';
+          break;
+        case 'connection_failed':
+          errorMessage = 'Failed to connect to the platform. Please try again.';
+          break;
+        default:
+          errorMessage = 'An error occurred. Please try again.';
       }
       
-      // For YouTube (placeholder for now)
-      if (platform === 'youtube') {
-        // This would be implemented similarly to Spotify
-        // For now, we'll just show a message
-        setMessage('YouTube connection is not implemented yet.');
-        setTimeout(() => setMessage(''), 3000);
+      // Add error details if available
+      if (errorDetails) {
+        errorMessage += ` Details: ${errorDetails}`;
       }
-    } catch (error) {
-      console.error(`Error connecting to ${platform}:`, error);
-      setError(`Failed to connect to ${platform}. Please try again.`);
-    } finally {
-      setIsConnecting(false);
+      
+      setError(errorMessage);
+      
+      // Remove the error parameter from the URL
+      url.searchParams.delete('error');
+      url.searchParams.delete('details');
+      window.history.replaceState({}, '', url.toString());
     }
+  }, []);
+  
+  /**
+   * Connects a streaming platform to the playlist
+   * 
+   * @param platform - The platform to connect ('spotify' or 'youtube')
+   */
+  const connectPlatform = (platform: 'spotify' | 'youtube') => {
+    setIsConnecting(true);
+    setError('');
+    setMessage('');
+    
+    // Store the current URL so we can redirect back after auth
+    const callbackUrl = `${window.location.origin}/playlists/${playlistId}/connect?platform=${platform}`;
+    localStorage.setItem(`${platform}ConnectCallback`, callbackUrl);
+    localStorage.setItem('connectPlaylistId', playlistId);
+    
+    // Redirect to the appropriate authentication provider
+    signIn(platform === 'spotify' ? 'spotify' : 'google', { callbackUrl });
   };
   
   /**
-   * Disconnects a playlist from a streaming platform
+   * Disconnects a platform from the playlist
    * 
-   * @param platform - The platform to disconnect (spotify or youtube)
+   * @param platform - The platform to disconnect ('spotify' or 'youtube')
    */
   const disconnectPlatform = async (platform: 'spotify' | 'youtube') => {
-    if (!confirm(`Are you sure you want to disconnect ${platform}?`)) {
-      return;
-    }
-    
-    setIsConnecting(true);
-    setError('');
-    setMessage(`Disconnecting from ${platform}...`);
-    
     try {
-      const response = await fetch(`/api/playlists/${playlistId}/disconnect`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ platform }),
+      setIsConnecting(true);
+      setError('');
+      setMessage('');
+      
+      // Call API to disconnect the platform
+      const response = await fetch(`/api/playlists/${playlistId}/platforms/${platform}`, {
+        method: 'DELETE',
       });
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || `Failed to disconnect from ${platform}`);
+        throw new Error(errorData.error || `Failed to disconnect ${platform}`);
       }
       
-      setMessage(`Successfully disconnected from ${platform}.`);
-      setTimeout(() => {
-        router.refresh();
-      }, 2000);
+      setMessage(`${platform.charAt(0).toUpperCase() + platform.slice(1)} disconnected successfully`);
+      
+      // Refresh the page to show updated connections
+      router.refresh();
     } catch (error) {
-      console.error(`Error disconnecting from ${platform}:`, error);
-      setError(`Failed to disconnect from ${platform}. Please try again.`);
+      setError(`Error disconnecting ${platform}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsConnecting(false);
     }
@@ -158,17 +171,17 @@ export default function ConnectPlatformsForm({
                 : 'bg-green-600 hover:bg-green-500 text-black'
             } disabled:opacity-50`}
           >
-            {spotifyConnection ? 'Disconnect' : 'Connect'}
+            {isConnecting ? 'Loading...' : (spotifyConnection ? 'Disconnect' : 'Connect')}
           </button>
         </div>
         
         <div className="flex items-center justify-between p-4 border border-green-700 rounded-lg">
           <div className="flex items-center space-x-4">
-            <div className="text-green-500">
+            <div className="text-red-500">
               <YouTubeIcon />
             </div>
             <div>
-              <h3 className="text-xl font-bold text-green-500">YouTube</h3>
+              <h3 className="text-xl font-bold text-red-500">YouTube Music</h3>
               <p className="text-green-400">
                 {youtubeConnection 
                   ? `Connected (ID: ${youtubeConnection.platformId})` 
@@ -185,10 +198,10 @@ export default function ConnectPlatformsForm({
             className={`px-4 py-2 rounded-md transition-colors ${
               youtubeConnection
                 ? 'bg-red-900 hover:bg-red-800 text-green-100'
-                : 'bg-green-600 hover:bg-green-500 text-black'
+                : 'bg-red-700 hover:bg-red-600 text-white'
             } disabled:opacity-50`}
           >
-            {youtubeConnection ? 'Disconnect' : 'Connect'}
+            {isConnecting ? 'Loading...' : (youtubeConnection ? 'Disconnect' : 'Connect')}
           </button>
         </div>
       </div>
