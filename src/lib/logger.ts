@@ -64,6 +64,26 @@ export const logger = {
   },
 
   /**
+   * Check if current environment is development
+   * 
+   * @returns True if in development environment
+   */
+  isDevelopment: (): boolean => {
+    return !IS_PRODUCTION;
+  },
+  
+  /**
+   * Conditionally execute a function only in development environment
+   * 
+   * @param callback - Function to execute in development
+   */
+  devOnly: (callback: () => void): void => {
+    if (!IS_PRODUCTION) {
+      callback();
+    }
+  },
+
+  /**
    * Log debug message (only in non-production environments by default)
    * 
    * @param message - The message to log

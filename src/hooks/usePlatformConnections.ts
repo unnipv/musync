@@ -89,7 +89,7 @@ const CACHE_EXPIRATION_TIME = 5 * 60 * 1000;
 function handleDatabaseError(error: any): string {
   // Check for MongoDB SSL/TLS errors
   if (error?.message?.includes('SSL routines') || error?.message?.includes('MongoServerSelectionError')) {
-    console.warn('Database connection error detected. Proceeding in offline mode.', error);
+    logger.warn('Database connection error detected. Proceeding in offline mode.', error);
     return 'Database connection issue detected. Some features may be limited.';
   }
   
@@ -117,6 +117,25 @@ const isDatabaseError = (error: any): boolean => {
      error.message?.includes('ENOTFOUND') ||
      error.message?.includes('timeout') ||
      error.message?.includes('offline mode')));
+};
+
+/**
+ * Handle common database connection errors in playlist fetching
+ * 
+ * @param err - The error object
+ * @param setError - Function to set error state
+ * @param platform - The platform name for logging
+ */
+const handlePlaylistFetchError = (err: any, setError: (message: string) => void, platform: string) => {
+  logger.error(`Error fetching ${platform} playlists:`, err);
+  
+  // Check for database connection errors
+  if (err.message && (
+      err.message.includes('database') || 
+      err.message.includes('MongoDB') ||
+      err.message.includes('SSL routines'))) {
+    setError('Database connection issues detected. Some features may be limited, but you can still browse your connected accounts.');
+  }
 };
 
 /**
@@ -635,14 +654,14 @@ export const usePlatformConnections = (): UsePlatformConnectionsReturn => {
       if (youtubeResponse.status === 'fulfilled') {
         youtubeData = youtubeResponse.value;
       } else {
-        console.error('Error checking YouTube Music connection:', youtubeResponse.reason);
+        logger.error('Error checking YouTube Music connection:', youtubeResponse.reason);
       }
       
       // Process Spotify response
       if (spotifyResponse.status === 'fulfilled') {
         spotifyData = spotifyResponse.value;
       } else {
-        console.error('Error checking Spotify connection:', spotifyResponse.reason);
+        logger.error('Error checking Spotify connection:', spotifyResponse.reason);
       }
       
       logger.debug('Connection check responses:', { 
@@ -666,7 +685,7 @@ export const usePlatformConnections = (): UsePlatformConnectionsReturn => {
         fetchPromises.push(
           fetchYoutubePlaylists(false)
             .catch(err => {
-              console.error('Error fetching YouTube playlists during connection check:', err);
+              logger.error('Error fetching YouTube playlists during connection check:', err);
               return null; // Continue even if one platform fetch fails
             })
         );
@@ -677,7 +696,7 @@ export const usePlatformConnections = (): UsePlatformConnectionsReturn => {
         fetchPromises.push(
           fetchSpotifyPlaylists(false)
             .catch(err => {
-              console.error('Error fetching Spotify playlists during connection check:', err);
+              logger.error('Error fetching Spotify playlists during connection check:', err);
               return null; // Continue even if one platform fetch fails
             })
         );

@@ -26,6 +26,12 @@ export default function ImportPlaylistsButton() {
   const [activeTab, setActiveTab] = useState<'spotify' | 'youtube'>('youtube');
   const [isInitializing, setIsInitializing] = useState(false);
   
+  // Add state for token validation
+  const [tokenValidation, setTokenValidation] = useState({
+    spotifyValid: false,
+    youtubeValid: false
+  });
+  
   // Use the platform connections hook
   const { 
     connections, 
@@ -97,38 +103,67 @@ export default function ImportPlaylistsButton() {
    * Effect to track state changes for debugging (only in development)
    */
   useEffect(() => {
-    // This functionality is now consolidated in the main logging effect above
-    // No need for a separate effect to track these specific state changes
-  }, [isInitializing, isCheckingConnection, isModalOpen]);
+    if (process.env.NODE_ENV !== 'production') {
+      // Create a debug object with all relevant state
+      const debugState = {
+        // Connection status
+        connections: {
+          spotify: connections.spotify,
+          youtube: connections.youtube,
+        },
+        // Playlist counts
+        playlists: {
+          spotifyCount: playlists.spotify.length,
+          youtubeCount: playlists.youtube.length,
+        },
+        // UI state
+        ui: {
+          activeTab,
+          isModalOpen,
+          isInitializing,
+          isCheckingConnection,
+        },
+        // Timestamp for tracking when events happen
+        timestamp: new Date().toISOString()
+      };
+      
+      // Only log debug information in development environment
+      logger.debug('ImportPlaylistsButton - State updated', debugState);
+    }
+  }, [
+    // Only trigger this effect when important state changes
+    connections.spotify, 
+    connections.youtube,
+    playlists.spotify.length,
+    playlists.youtube.length,
+    activeTab,
+    isModalOpen,
+    isInitializing,
+    isCheckingConnection
+  ]);
   
   /**
    * Effect to check connections when modal opens
    */
   useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('Modal state effect triggered:', {
-        isModalOpen,
-        status,
-        sessionExists: !!session,
-        timestamp: new Date().toISOString()
-      });
-    }
+    logger.debug('Modal state effect triggered:', {
+      isModalOpen,
+      status,
+      sessionExists: !!session,
+      timestamp: new Date().toISOString()
+    });
     
     let safetyTimeout: NodeJS.Timeout | null = null;
     
     if (isModalOpen && status === 'authenticated') {
       // Initialize with loading state
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('Starting initialization and connection check process');
-      }
+      logger.debug('Starting initialization and connection check process');
       setIsInitializing(true);
       
       // Add a safety timeout to clear initialization state after 5 seconds maximum
       // This prevents the UI from getting stuck in loading state indefinitely
       safetyTimeout = setTimeout(() => {
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("Safety timeout triggered - forcing initialization to complete");
-        }
+        logger.warn("Safety timeout triggered - forcing initialization to complete");
         if (isMounted.current) {
           setIsInitializing(false);
           setError("Connection check timed out. You may need to manually refresh or reconnect your accounts.");
@@ -141,10 +176,6 @@ export default function ImportPlaylistsButton() {
           // First check if tokens exist in session
           const hasSpotifyToken = !!session?.user?.spotifyAccessToken;
           const hasGoogleToken = !!session?.user?.googleAccessToken;
-          
-          // Prepare validation results
-          let spotifyValid = false;
-          let youtubeValid = false;
           
           console.log('Starting connection check with tokens:', {
             hasSpotifyToken,
@@ -161,12 +192,12 @@ export default function ImportPlaylistsButton() {
               })
               .then(res => res.json())
               .then(data => {
-                spotifyValid = data.valid;
-                console.log('Spotify token validation:', { valid: spotifyValid });
-                if (!spotifyValid) {
+                setTokenValidation(prev => ({ ...prev, spotifyValid: data.valid }));
+                console.log('Spotify token validation:', { valid: data.valid });
+                if (!data.valid) {
                   console.warn('Spotify token invalid:', data);
                 }
-                return { provider: 'spotify', valid: spotifyValid };
+                return { provider: 'spotify', valid: data.valid };
               })
               .catch(err => {
                 console.error('Error validating Spotify token:', err);
@@ -182,15 +213,15 @@ export default function ImportPlaylistsButton() {
               })
               .then(res => res.json())
               .then(data => {
-                youtubeValid = data.valid;
-                console.log('YouTube token validation:', { valid: youtubeValid });
-                if (!youtubeValid) {
+                setTokenValidation(prev => ({ ...prev, youtubeValid: data.valid }));
+                console.log('YouTube token validation:', { valid: data.valid });
+                if (!data.valid) {
                   console.warn('YouTube token invalid:', data);
                   if (data.reason === 'permission_error') {
                     setError('Your YouTube connection has insufficient permissions. Please reconnect with the required YouTube permissions.');
                   }
                 }
-                return { provider: 'google', valid: youtubeValid };
+                return { provider: 'google', valid: data.valid };
               })
               .catch(err => {
                 console.error('Error validating Google token:', err);
@@ -216,14 +247,14 @@ export default function ImportPlaylistsButton() {
           
           // Prepare the final state
           const finalConnections = {
-            spotify: spotifyValid,
-            youtube: youtubeValid
+            spotify: tokenValidation.spotifyValid,
+            youtube: tokenValidation.youtubeValid
           };
           
           // Set active tab to the first valid connection
-          if (youtubeValid) {
+          if (tokenValidation.youtubeValid) {
             setActiveTab('youtube');
-          } else if (spotifyValid) {
+          } else if (tokenValidation.spotifyValid) {
             setActiveTab('spotify');
           }
           
@@ -234,9 +265,9 @@ export default function ImportPlaylistsButton() {
           setIsInitializing(false);
           
           // Fetch playlists for any connected platforms (in the background)
-          if (spotifyValid) {
+          if (tokenValidation.spotifyValid) {
             fetchSpotifyPlaylists(false).catch(err => {
-              console.error('Error fetching Spotify playlists during initialization:', err);
+              logger.error('Error fetching Spotify playlists during initialization:', err);
               // Check for database connection errors
               if (err.message && (
                   err.message.includes('database') || 
@@ -247,9 +278,9 @@ export default function ImportPlaylistsButton() {
             });
           } 
           
-          if (youtubeValid) {
+          if (tokenValidation.youtubeValid) {
             fetchYoutubePlaylists(false).catch(err => {
-              console.error('Error fetching YouTube playlists during initialization:', err);
+              logger.error('Error fetching YouTube playlists during initialization:', err);
               // Check for database connection errors
               if (err.message && (
                   err.message.includes('database') || 
