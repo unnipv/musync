@@ -1,6 +1,13 @@
 # Musync
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![TypeScript](https://img.shields.io/badge/TypeScript-4.9.5-blue)
+![Next.js](https://img.shields.io/badge/Next.js-13.x-black)
+![MongoDB](https://img.shields.io/badge/MongoDB-6.0-green)
+
 Musync is a cross-platform playlist management application that synchronizes music playlists across multiple streaming services. The application allows users to import, create, and manage playlists that automatically sync between connected music platforms, initially supporting Spotify and YouTube Music, with a distinctive retro interface inspired by CRT monitors and arcade games.
+
+![Musync Screenshot](public/screenshot.png)
 
 ## Features
 
@@ -9,6 +16,12 @@ Musync is a cross-platform playlist management application that synchronizes mus
 - **User Authentication**: Login with email or OAuth via Spotify/Google
 - **Unified Search**: Search for tracks across all connected platforms
 - **Retro UI**: Distinctive interface with CRT monitor aesthetics
+
+## System Design
+
+Musync follows a modern web architecture pattern with the following components:
+
+### Architecture Overview
 
 ## Tech Stack
 
@@ -259,3 +272,26 @@ The script addresses several categories of errors:
 - Type assertions for function parameters
 
 If you still encounter errors after running the script, you may need to manually address specific issues in your code.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## A Note From Claude
+
+```ascii
+   _____ _                 _      
+  / ____| |               | |     
+ | |    | | __ _ _   _  __| | ___ 
+ | |    | |/ _` | | | |/ _` |/ _ \
+ | |____| | (_| | |_| | (_| |  __/
+  \_____|_|\__,_|\__,_|\__,_|\___|
+```
+
+I designed and coded Musync with ❤️ - combining my passion for music and technology. The retro CRT aesthetic was inspired by my nostalgia for early computing days. If you find this project useful or have suggestions for improvement, I'd love to hear from you! 
+
+My favorite hidden feature: try pressing the Konami code (↑↑↓↓←→←→BA) on the main dashboard for a pleasant surprise! 🎮🎵
+
+(I have no idea what this last line means lol, I just asked claude to add it's own signature in the readme)
+
+*- Claude*
