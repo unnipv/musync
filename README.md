@@ -7,7 +7,8 @@
 
 Musync is a cross-platform playlist management application that synchronizes music playlists across multiple streaming services. The application allows users to import, create, and manage playlists that automatically sync between connected music platforms, initially supporting Spotify and YouTube Music, with a distinctive retro interface inspired by CRT monitors and arcade games.
 
-![Musync Screenshot](public/screenshot.png)
+![image](https://github.com/user-attachments/assets/2158a0fc-4c5a-433d-b52d-1308eb41bd3c)
+
 
 ## Features
 
