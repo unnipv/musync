@@ -7,6 +7,13 @@ import { connectToDatabase } from '@/lib/mongodb';
 import { revalidatePath } from 'next/cache';
 import { ObjectId } from 'mongodb';
 import { getCachedSession } from '@/lib/session-cache';
+import { 
+  YouTubeOperationType, 
+  checkQuotaBeforeOperation, 
+  recordQuotaUsage 
+} from '@/lib/youtube-quota';
+import logger from '@/lib/logger';
+import YTMUSIC from 'ytmusic-api';
 
 // Simple in-memory cache for YouTube API responses
 // In production, this should be replaced with Redis or another distributed cache
@@ -17,6 +24,18 @@ interface CacheEntry {
 
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
 const youtubeCache = new Map<string, CacheEntry>();
+
+// Add this interface definition near the top of the file with other interfaces (around line 20)
+interface PlatformData {
+  platform: string;
+  id: string;
+  syncStatus: "synced" | "partial" | "failed";
+  lastSyncedAt: Date;
+  syncError?: string; // Optional property for error details
+}
+
+// Add this at the top of the file with your other constants
+const MAX_TRACKS_PER_SYNC = 50; // Maximum number of tracks to process in a single sync
 
 /**
  * Gets data from cache or fetches it if not cached or expired
@@ -61,6 +80,7 @@ async function getCachedOrFetch(
  * @param options - Additional fetch options
  * @param maxRetries - Maximum number of retries (default: 3)
  * @param useCache - Whether to use caching (default: true)
+ * @param operationType - Type of YouTube operation for quota tracking
  * @returns The API response
  */
 async function fetchYouTubeWithQuotaHandling(
@@ -68,8 +88,25 @@ async function fetchYouTubeWithQuotaHandling(
   accessToken: string | null,
   options: RequestInit = {},
   maxRetries = 3,
-  useCache = true
+  useCache = true,
+  operationType: YouTubeOperationType = YouTubeOperationType.READ_LIGHT
 ): Promise<Response> {
+  // Check if we have enough quota before proceeding
+  try {
+    checkQuotaBeforeOperation(operationType);
+  } catch (error) {
+    console.warn(`YouTube quota check failed: ${error}`);
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: error instanceof Error ? error.message : 'YouTube API quota limit reached. Please try again later.',
+          domain: 'youtube.quota'
+        }
+      }),
+      { status: 429 }
+    );
+  }
+  
   // Use cache if enabled and it's a GET request
   if (useCache && (!options.method || options.method === 'GET')) {
     const cacheKey = `youtube-api:${url}`;
@@ -83,6 +120,8 @@ async function fetchYouTubeWithQuotaHandling(
           // Only cache successful responses
           if (response.ok) {
             const clonedResponse = response.clone();
+            // Record quota usage for successful requests
+            recordQuotaUsage(operationType);
             return {
               status: response.status,
               statusText: response.statusText,
@@ -108,12 +147,12 @@ async function fetchYouTubeWithQuotaHandling(
     } catch (error) {
       // If any error occurs with caching, fall back to direct API call
       console.warn(`Cache error, falling back to direct API call: ${error}`);
-      return fetchYouTubeWithRetries(url, accessToken, options, maxRetries);
+      return fetchYouTubeWithRetries(url, accessToken, options, maxRetries, operationType);
     }
   }
   
   // For non-GET requests or when cache is disabled
-  return fetchYouTubeWithRetries(url, accessToken, options, maxRetries);
+  return fetchYouTubeWithRetries(url, accessToken, options, maxRetries, operationType);
 }
 
 /**
@@ -123,7 +162,8 @@ async function fetchYouTubeWithRetries(
   url: string,
   accessToken: string | null,
   options: RequestInit = {},
-  maxRetries = 3
+  maxRetries = 3,
+  operationType: YouTubeOperationType = YouTubeOperationType.READ_LIGHT
 ): Promise<Response> {
   let currentRetry = 0;
   
@@ -167,12 +207,21 @@ async function fetchYouTubeWithRetries(
         headers
       });
       
-      // If quota exceeded, implement exponential backoff
-      if (response.status === 403) {
+      // Record quota usage for successful requests
+      if (response.ok) {
+        recordQuotaUsage(operationType);
+        return response; // Return early on success - no need to check other conditions
+      }
+      
+      // Handle specific error cases - consolidated error handling
+      if (response.status === 403 || response.status === 429) {
         const errorData = await response.json().catch(() => ({}));
         
-        if (errorData?.error?.errors?.some((e: any) => e.domain === 'youtube.quota')) {
-          console.warn(`YouTube quota exceeded. Retry ${currentRetry + 1}/${maxRetries}`);
+        // Single consolidated quota exceeded check
+        if (errorData?.error?.errors?.some((e: any) => 
+            e.domain === 'youtube.quota' || e.reason === 'quotaExceeded')) {
+          logger.warn(`YouTube quota exceeded. Retry ${currentRetry + 1}/${maxRetries}`);
+          recordQuotaUsage(YouTubeOperationType.READ_HEAVY, 10);
           
           if (currentRetry < maxRetries) {
             // Exponential backoff with jitter: wait longer after each retry
@@ -184,16 +233,7 @@ async function fetchYouTubeWithRetries(
             currentRetry++;
             continue;
           } else {
-            // Out of retries, create a response with quota error
-            return new Response(
-              JSON.stringify({
-                error: {
-                  message: 'YouTube API quota exceeded. Please try again later.',
-                  domain: 'youtube.quota'
-                }
-              }),
-              { status: 429 }
-            );
+            return createQuotaExceededResponse();
           }
         }
         
@@ -253,6 +293,19 @@ async function fetchYouTubeWithRetries(
   
   // This should never execute, but TypeScript requires a return
   throw new Error('Failed to complete YouTube API request after retries');
+}
+
+// Reusable quota exceeded response creation
+function createQuotaExceededResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: 'YouTube API quota exceeded. Please try again later.',
+        domain: 'youtube.quota'
+      }
+    }),
+    { status: 429 }
+  );
 }
 
 /**
@@ -553,7 +606,7 @@ export async function POST(
       (playlist.spotifyId ? `https://open.spotify.com/playlist/${playlist.spotifyId}` : undefined);
       
     const youtubeUrlForResult = result.youtube?.youtubeUrl || result.youtube?.playlistUrl || 
-      (playlist.youtubeId ? `https://www.youtube.com/playlist?list/${playlist.youtubeId}` : undefined);
+      (playlist.youtubeId ? `https://www.youtube.com/playlist?list=${playlist.youtubeId}` : undefined);
 
     // Extract YouTube and Spotify IDs from playlist
     console.log("PLAYLIST BEFORE RESPONSE:", {
@@ -580,7 +633,7 @@ export async function POST(
     }
 
     if (playlist.youtubeId && !platformUrlsForResponse.youtube) {
-      platformUrlsForResponse.youtube = `https://www.youtube.com/playlist?list/${playlist.youtubeId}`;
+      platformUrlsForResponse.youtube = `https://www.youtube.com/playlist?list=${playlist.youtubeId}`;
     }
 
     console.log("RESPONSE URLs:", {
@@ -1218,16 +1271,27 @@ async function syncToSpotify(playlist: any, accessToken: string | undefined, pla
         continue;
       }
       
-      // If the track already has a Spotify ID or URI, use it
-      if (track.spotifyUri) {
-        tracksToAdd.push(track.spotifyUri);
-        continue;
-      }
-      
-      if (track.spotifyId) {
-        const uri = `spotify:track:${track.spotifyId}`;
-        tracksToAdd.push(uri);
-        continue;
+      // If the track already has a Spotify ID or URI, check if it's already in the playlist
+      if (track.spotifyUri || track.spotifyId) {
+        const trackId = track.spotifyId || (track.spotifyUri ? track.spotifyUri.split(':')[2] : null);
+        
+        // Skip if this track is already in the Spotify playlist
+        if (trackId && spotifyTrackIds.has(trackId)) {
+          console.log(`Track "${track.title}" already exists in Spotify playlist, skipping`);
+          continue;
+        }
+        
+        // Not in playlist, add it
+        if (track.spotifyUri) {
+          tracksToAdd.push(track.spotifyUri);
+          continue;
+        }
+        
+        if (track.spotifyId) {
+          const uri = `spotify:track:${track.spotifyId}`;
+          tracksToAdd.push(uri);
+          continue;
+        }
       }
       
       // If we don't have a Spotify ID, try to search for the track
@@ -1262,6 +1326,13 @@ async function syncToSpotify(playlist: any, accessToken: string | undefined, pla
         
         if (spotifyTrack) {
           console.log(`Found Spotify match for "${title} - ${artist}": ${spotifyTrack.id}`);
+          
+          // Check if this track is already in the Spotify playlist
+          if (spotifyTrackIds.has(spotifyTrack.id)) {
+            console.log(`Found track already exists in Spotify playlist, skipping`);
+            continue;
+          }
+          
           tracksToAdd.push(spotifyTrack.uri);
           spotifyTrackLookup.set(trackId, spotifyTrack);
           foundCount++;
@@ -1588,963 +1659,203 @@ async function importMissingVideosFromYouTube(playlist: any, youtubeVideos: any[
  */
 async function syncToYouTube(playlist: any, session: any, playlistDocument?: any) {
   try {
-    // Check authentication options
-    const accessToken = session?.user?.googleAccessToken || null;
-    let usingApiKeyFallback = false;
+    // Extract tokens from session
+    const accessToken = session?.user?.googleAccessToken;
     
-    // Check for Google authentication issues
-    if (!accessToken && process.env.YOUTUBE_API_KEY) {
-      console.log('No Google access token available, will attempt to use API key for limited functionality');
-      usingApiKeyFallback = true;
-    } else if (session?.user?.googleError === 'RefreshAccessTokenError' && process.env.YOUTUBE_API_KEY) {
-      console.log('Google token refresh failed previously, will attempt to use API key for limited functionality');
-      usingApiKeyFallback = true;
+    if (!accessToken) {
+      throw new Error('Google account not connected. Please connect your Google account first.');
     }
     
-    // If no auth method available, return error
-    if (!accessToken && !process.env.YOUTUBE_API_KEY) {
-      return {
-        status: 'failed',
-        message: 'No Google access token or API key available',
-        success: false
-      };
+    // Get playlist ID from document if exists
+    let youtubePlaylistId = null;
+    let createdPlaylist = false;
+    
+    if (playlistDocument && playlistDocument.platformData) {
+      const ytPlatformData = playlistDocument.platformData.find(
+        (p: any) => p.platform === 'youtube'
+      );
+      
+      if (ytPlatformData && ytPlatformData.id) {
+        youtubePlaylistId = ytPlatformData.id;
+      }
     }
     
-    // Check if playlist has YouTube platform data
-    const youtubeData = playlist.platformData?.find(
-      (data: any) => data.platform === 'youtube'
-    );
+    // Initialize YouTube Music API
+    console.log('Initializing YouTube Music API...');
+    const ytmusic = await initializeYouTubeMusicAPI(accessToken);
     
-    if (!youtubeData) {
-      return {
-        status: 'failed',
-        message: 'Playlist is not connected to YouTube',
-        success: false
-      };
+    // Check if we're using fallback
+    if (ytmusic.type === 'fallback' || ytmusic.type === 'direct') {
+      console.log(`Using ${ytmusic.type} implementation for YouTube Music API`);
     }
     
-    // Get YouTube playlist ID
-    let youtubePlaylistId = youtubeData.id || '';
-    let needToCreatePlaylist = false;
-    
-    console.log(`Syncing to YouTube playlist ID: ${youtubePlaylistId}`);
-
-    // Provide a warning if we're using API key fallback and want to create/update playlist
-    if (usingApiKeyFallback && (!youtubePlaylistId || youtubePlaylistId.length === 0)) {
-      console.warn('Using API key fallback but trying to create a new playlist - this will fail');
-      return {
-        status: 'failed',
-        message: 'Cannot create a new YouTube playlist without proper authentication. Please reconnect your Google account.',
-        success: false,
-        needsReconnect: true
-      };
+    // Create or get the YouTube Music playlist
+    if (youtubePlaylistId) {
+      console.log(`Checking existing YouTube playlist: ${youtubePlaylistId}`);
+      const existingPlaylist = await ytmusic.getPlaylist(youtubePlaylistId);
+      
+      if (!existingPlaylist) {
+        console.log(`Existing YouTube playlist ${youtubePlaylistId} not found, will create new one`);
+        youtubePlaylistId = null;
+      } else {
+        console.log(`Found existing YouTube playlist: ${existingPlaylist.title}`);
+      }
     }
     
-    // Check if YouTube playlist ID exists and is valid
     if (!youtubePlaylistId) {
-      console.log('No YouTube playlist ID found, will create new playlist');
-      needToCreatePlaylist = true;
-    } else {
-      // Try to fetch the playlist from YouTube
+      // Make sure we have a title to use
+      const playlistTitle = playlist.title || playlist.name || 'My Playlist';
+      console.log(`Creating new YouTube Music playlist: ${playlistTitle}`);
+      
       try {
-        // Optimize quota by only requesting the minimal fields we need
-        const response = await fetchYouTubeWithQuotaHandling(
-          `https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${youtubePlaylistId}&fields=items(id,snippet/title)`,
-          accessToken,
-          {},
-          3,  // 3 retries
-          true // Use cache
-        );
-
-        if (!response.ok) {
-          // Check for quota error response from our helper
-          try {
-            const errorData = await response.json();
-            if (errorData?.error?.domain === 'youtube.quota') {
-              return {
-                status: 'failed',
-                message: 'YouTube API quota exceeded. Please try again later.',
-                quotaExceeded: true,
-                success: false
-              };
-            }
-          } catch (e) {
-            // JSON parsing failed, continue with normal error handling
-          }
-          
-          const errorText = await response.text();
-          console.error('Failed to fetch YouTube playlist:', errorText);
-          
-          if (response.status === 404) {
-            console.log('YouTube playlist not found, will create a new one');
-            needToCreatePlaylist = true;
-          } else {
-            return {
-              status: 'failed',
-              message: `Failed to fetch YouTube playlist: ${errorText}`
-            };
-          }
-        } else {
-          const data = await response.json();
-          if (!data.items || data.items.length === 0) {
-            console.log('YouTube playlist not found, will create a new one');
-            needToCreatePlaylist = true;
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching YouTube playlist:', error);
-        return {
-          status: 'failed',
-          message: `Error fetching YouTube playlist: ${(error as Error).message}`
-        };
-      }
-    }
-
-    // Get YouTube user ID
-    const userResponse = await fetchYouTubeWithQuotaHandling(
-      // Optimize quota by only requesting the minimal fields we need
-      'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&fields=items(id,snippet/title)',
-      accessToken,
-      {},
-      3,  // 3 retries
-      true // Use cache
-    );
-
-    if (!userResponse.ok) {
-      // Check for quota error
-      try {
-        const errorData = await userResponse.json();
-        if (errorData?.error?.domain === 'youtube.quota') {
-          return {
-            status: 'failed',
-            message: 'YouTube API quota exceeded. Please try again later.',
-            quotaExceeded: true,
-            success: false
-          };
-        }
-      } catch (e) {
-        // JSON parsing failed, continue with normal error handling
-      }
-      
-      const errorText = await userResponse.text();
-      console.error('Failed to get YouTube user channels:', errorText);
-      return {
-        status: 'failed',
-        message: `Failed to get YouTube user channels: ${errorText}`
-      };
-    }
-
-    const userData = await userResponse.json();
-    const channelId = userData.items?.[0]?.id;
-
-    if (!channelId) {
-      return {
-        status: 'failed',
-        message: 'Could not find YouTube channel for current user'
-      };
-    }
-
-    // STEP 1: Create or update the YouTube playlist
-    
-    if (needToCreatePlaylist) {
-      // Check if we're using API key fallback - can't create playlists with just API key
-      if (usingApiKeyFallback) {
-        return {
-          status: 'failed',
-          message: 'Cannot create a new YouTube playlist with API key. Please reconnect your Google account.',
-          success: false,
-          needsReconnect: true
-        };
-      }
-      
-      console.log('Creating new YouTube playlist');
-      const createResponse = await fetch(
-        'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            snippet: {
-              title: playlist.title || playlist.name || 'My Playlist',
-              description: playlist.description || '',
-              channelId: channelId
-            },
-            status: {
-              privacyStatus: playlist.isPublic ? 'public' : 'private'
-            }
-          })
-        }
-      );
-
-      if (!createResponse.ok) {
-        const errorText = await createResponse.text();
-        console.error('Failed to create YouTube playlist:', errorText);
-        
-        // Check if it's an authentication error
-        if (createResponse.status === 401 || createResponse.status === 403) {
-          return {
-            status: 'failed',
-            message: 'Authentication failed. Please reconnect your Google account.',
-            success: false,
-            needsReconnect: true
-          };
-        }
-        
-        return {
-          status: 'failed',
-          message: `Failed to create YouTube playlist: ${errorText}`
-        };
-      }
-
-      const newPlaylist = await createResponse.json();
-      youtubePlaylistId = newPlaylist.id;
-      console.log(`Created new YouTube playlist with ID: ${youtubePlaylistId}`);
-
-      // Update the playlist in the database with the new YouTube ID
-      const platformDataToUpdate = {
-        platform: 'youtube',
-        id: youtubePlaylistId,
-        platformId: youtubePlaylistId,
-        lastSyncedAt: new Date(),
-        syncStatus: 'synced'
-      };
-
-      // Check if platformData exists, if not, create it
-      if (!playlist.platformData) {
-        playlist.platformData = [platformDataToUpdate];
-      } else {
-        // Check if youtube platform data exists
-        const ytIndex = playlist.platformData.findIndex((data: any) => data.platform === 'youtube');
-        if (ytIndex >= 0) {
-          playlist.platformData[ytIndex] = {
-            ...playlist.platformData[ytIndex],
-            ...platformDataToUpdate
-          };
-        } else {
-          playlist.platformData.push(platformDataToUpdate);
-        }
-      }
-      
-      await playlist.save();
-    } else {
-      // Update existing playlist details
-      console.log(`Updating YouTube playlist details for ID: ${youtubePlaylistId}`);
-      const updateResponse = await fetch(
-        `https://www.googleapis.com/youtube/v3/playlists?part=snippet,status`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            id: youtubePlaylistId,
-            snippet: {
-              title: playlist.title || playlist.name || 'My Playlist',
-              description: playlist.description || '',
-              channelId: channelId
-            },
-            status: {
-              privacyStatus: playlist.isPublic ? 'public' : 'private'
-            }
-          })
-        }
-      );
-      
-      if (!updateResponse.ok) {
-        const errorText = await updateResponse.text();
-        console.error('Failed to update YouTube playlist details:', errorText);
-      } else {
-        console.log('Successfully updated YouTube playlist details');
-      }
-    }
-
-    // STEP 2: Get current videos in YouTube playlist
-    console.log(`Fetching current videos from YouTube playlist: ${youtubePlaylistId}`);
-    
-    const currentVideos: any[] = [];
-    let nextPageToken: string | null = null;
-    
-    // Use a smaller batch size to help with quotas
-    const MAX_RESULTS = 25; // Reduce from 50 to 25
-    // Limit total items to fetch (adjust based on your app's needs)
-    const MAX_TOTAL_ITEMS = 200;
-    let totalFetched = 0;
-    
-    do {
-      // Optimize fields to only get what we need
-      const fields = 'items(id,snippet(title,videoOwnerChannelTitle,publishedAt,resourceId),contentDetails(videoId)),nextPageToken,pageInfo';
-      
-      const pageUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${youtubePlaylistId}&maxResults=${MAX_RESULTS}&fields=${encodeURIComponent(fields)}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
-      
-      const videosResponse = await fetchYouTubeWithQuotaHandling(
-        pageUrl,
-        accessToken,
-        {},
-        3, // 3 retries
-        true // Use cache
-      );
-
-      if (!videosResponse.ok) {
-        // Check for quota error
-        try {
-          const errorData = await videosResponse.json();
-          if (errorData?.error?.domain === 'youtube.quota') {
-            return {
-              status: 'failed',
-              message: 'YouTube API quota exceeded. Please try again later.',
-              quotaExceeded: true,
-              success: false
-            };
-          }
-        } catch (e) {
-          // JSON parsing failed, continue with normal error handling
-        }
-        
-        const errorText = await videosResponse.text();
-        console.error('Failed to get current videos from YouTube:', errorText);
-        return {
-          status: 'failed',
-          message: `Failed to get current videos from YouTube: ${errorText}`
-        };
-      }
-
-      const videosData = await videosResponse.json();
-      if (videosData.items && videosData.items.length > 0) {
-        currentVideos.push(...videosData.items);
-        totalFetched += videosData.items.length;
-        console.log(`Fetched ${totalFetched} YouTube videos so far`);
-      }
-      
-      nextPageToken = videosData.nextPageToken || null;
-      
-      // Stop if we've reached our limit to prevent excessive quota usage
-      if (totalFetched >= MAX_TOTAL_ITEMS) {
-        console.log(`Reached maximum fetch limit of ${MAX_TOTAL_ITEMS} items`);
-        break;
-      }
-      
-      // Add a small delay between requests to be kind to the API
-      if (nextPageToken) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-    } while (nextPageToken);
-    
-    console.log(`Found ${currentVideos.length} videos in YouTube playlist`);
-    
-    // Special case: If YouTube playlist exists but is empty, search for and add tracks directly
-    if (currentVideos.length === 0 && playlist.tracks && playlist.tracks.length > 0) {
-      console.log('YouTube playlist is empty. Searching and adding tracks...');
-      
-      let addedCount = 0;
-      let failedCount = 0;
-      
-      for (const track of playlist.tracks) {
-        if (!track.title || !track.artist) {
-          console.log(`Skipping track with missing title or artist: ${track.title || ''} - ${track.artist || ''}`);
-          continue;
-        }
-        
-        // Search for the track on YouTube
-        const searchQuery = encodeURIComponent(`${track.artist} - ${track.title}`);
-        console.log(`Searching for: ${track.artist} - ${track.title}`);
-        
-        try {
-          // Define minimal fields needed to reduce quota cost
-          const fields = 'items(id/videoId,snippet/title),pageInfo';
-          const searchResponse = await fetchYouTubeWithQuotaHandling(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=1&fields=${encodeURIComponent(fields)}`,
-            accessToken,
-            {},
-            3, // 3 retries
-            true // Use cache for search results (useful for failed syncs)
-          );
-          
-          if (!searchResponse.ok) {
-            // Check for quota error
-            try {
-              const errorData = await searchResponse.json();
-              if (errorData?.error?.domain === 'youtube.quota') {
-                console.warn('YouTube quota exceeded during search. Stopping syncing process.');
-                return {
-                  status: 'partial',
-                  message: `Added ${addedCount} videos to YouTube playlist. YouTube API quota exceeded.`,
-                  success: addedCount > 0,
-                  quotaExceeded: true,
-                  youtubeUrl: `https://www.youtube.com/playlist?list=${youtubePlaylistId}`
-                };
-              }
-            } catch (e) {
-              // JSON parsing failed, continue with normal error handling
-            }
-            
-            console.error('Failed to search YouTube:', await searchResponse.text());
-            failedCount++;
-            continue;
-          }
-          
-          const searchData = await searchResponse.json();
-          if (searchData.items && searchData.items.length > 0) {
-            const videoId = searchData.items[0].id?.videoId;
-            
-            if (videoId) {
-              console.log(`Found YouTube match: ${videoId} for "${track.title}"`);
-              
-              // Update the track with the found YouTube ID
-              track.youtubeId = videoId;
-              
-              // Save the updated track in the database
-              if (playlistDocument) {
-                try {
-                  await Playlist.updateOne(
-                    { _id: playlistDocument._id, "tracks._id": track._id },
-                    { $set: { "tracks.$.youtubeId": videoId } }
-                  );
-                } catch (error) {
-                  console.error(`Failed to update track with YouTube ID: ${error}`);
-                }
-              }
-              
-              // Add the track to the YouTube playlist
-              try {
-                const addResponse = await fetchYouTubeWithQuotaHandling(
-                  'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',
-                  accessToken,
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      snippet: {
-                        playlistId: youtubePlaylistId,
-                        resourceId: {
-                          kind: 'youtube#video',
-                          videoId: videoId
-                        }
-                      }
-                    })
-                  },
-                  2, // Fewer retries for write operations
-                  false // Don't use cache for POST requests
-                );
-                
-                if (addResponse.ok) {
-                  console.log(`Added track to YouTube playlist: ${track.title}`);
-                  addedCount++;
-                } else {
-                  console.error(`Failed to add video to YouTube playlist:`, await addResponse.text());
-                  failedCount++;
-                }
-              } catch (error) {
-                console.error(`Error adding video to YouTube playlist: ${error}`);
-                failedCount++;
-              }
-            } else {
-              console.log(`No video ID found for track: ${track.title}`);
-              failedCount++;
-            }
-          } else {
-            console.log(`No YouTube results found for: ${track.artist} - ${track.title}`);
-            failedCount++;
-          }
-        } catch (error) {
-          console.error(`Error searching YouTube: ${error}`);
-          failedCount++;
-        }
-        
-        // Add a small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      // Now that we've attempted to add all tracks, update the database with any YouTube IDs we found
-      if (playlistDocument && addedCount > 0) {
-        try {
-          await Playlist.findByIdAndUpdate(
-            playlistDocument._id,
-            { $set: { tracks: playlist.tracks } }
-          );
-          console.log(`Updated playlist in database with ${addedCount} YouTube IDs`);
-        } catch (error) {
-          console.error(`Failed to update playlist with YouTube IDs: ${error}`);
-        }
-      }
-      
-      return {
-        status: 'success',
-        message: `Added ${addedCount} tracks to empty YouTube playlist (${failedCount} failed)`,
-        success: true,
-        youtubeUrl: `https://www.youtube.com/playlist?list=${youtubePlaylistId}`,
-        youtubePlaylistId,
-        added: addedCount
-      };
-    }
-    
-    // STEP 3: Find tracks to add and remove
-    const youtubeVideoIds = new Set(currentVideos.map((item: any) => item.contentDetails?.videoId).filter(Boolean));
-    
-    // If local playlist is empty, import videos from YouTube
-    if (!playlist.tracks || playlist.tracks.length === 0) {
-      console.log('Local playlist is empty. Importing videos from YouTube...');
-      
-      // Create tracks array if it doesn't exist
-      if (!playlist.tracks) {
-        playlist.tracks = [];
-      }
-      
-      // Import videos from YouTube
-      let importedCount = 0;
-      
-      for (const video of currentVideos) {
-        // Add the video to our local playlist
-        playlist.tracks.push({
-          title: video.snippet?.title || '',
-          artist: video.snippet?.videoOwnerChannelTitle || '',
-          duration: 0, // YouTube API doesn't directly provide duration in this response
-          youtubeId: video.contentDetails?.videoId || video.id?.videoId || video.id,
-          addedAt: new Date(video.snippet?.publishedAt || Date.now()),
-          updatedAt: new Date()
-        });
-        
-        importedCount++;
-      }
-      
-      // Save the updated playlist with imported tracks
-      if (playlistDocument) {
-        await Playlist.findByIdAndUpdate(
-          playlistDocument._id,
-          { $set: { tracks: playlist.tracks } }
-        );
-      } else {
-        await playlist.save();
-      }
-      
-      console.log(`Imported ${importedCount} videos from YouTube to local playlist`);
-      
-      return {
-        status: 'success',
-        message: `Imported ${importedCount} videos from YouTube to local playlist`,
-        youtubePlaylistId,
-        success: true,
-        youtubeUrl: `https://www.youtube.com/playlist?list=${youtubePlaylistId}`
-      };
-    }
-    
-    // Try to match local tracks without YouTube IDs to YouTube videos
-    const tracksWithoutYoutubeId = playlist.tracks.filter((track: any) => !track.youtubeId);
-    
-    if (tracksWithoutYoutubeId.length > 0 && currentVideos.length > 0) {
-      console.log(`Found ${tracksWithoutYoutubeId.length} tracks without YouTube IDs. Attempting to match...`);
-      
-      let matchedCount = 0;
-      
-      for (const track of tracksWithoutYoutubeId) {
-        // Find a matching video by title and artist
-        const matchingVideo = currentVideos.find((video: any) => 
-          video.snippet?.title && videoMatchesTrack(video.snippet.title, track)
+        const newPlaylist = await ytmusic.createPlaylist(
+          `${playlistTitle} - Music`,
+          playlist.description || 'Synchronized playlist from Musync',
+          'PRIVATE'
         );
         
-        if (matchingVideo) {
-          // Update track with YouTube ID
-          track.youtubeId = matchingVideo.contentDetails?.videoId || 
-                            matchingVideo.id?.videoId || 
-                            matchingVideo.id;
-          matchedCount++;
-        }
-      }
-      
-      if (matchedCount > 0) {
-        console.log(`Matched ${matchedCount} local tracks with YouTube videos`);
+        youtubePlaylistId = newPlaylist.id;
+        createdPlaylist = true;
         
-        // Save the updated tracks with YouTube IDs
+        // Update the database immediately
         if (playlistDocument) {
-          await Playlist.findByIdAndUpdate(
-            playlistDocument._id,
-            { $set: { tracks: playlist.tracks } }
+          await updateYouTubePlatformData(
+            playlistDocument, 
+            youtubePlaylistId, 
+            'synced'
           );
-        } else {
-          await playlist.save();
-        }
-      }
-    }
-    
-    // Calculate videos to remove with updated tracks
-    const youtubeIds = new Set<string>(
-      playlist.tracks
-        .map((track: any) => track.youtubeId)
-        .filter(Boolean)
-    );
-    
-    const videosToRemove = currentVideos.filter(
-      (video: any) => {
-        const videoId = video.contentDetails?.videoId || video.id?.videoId || video.id;
-        return videoId && !youtubeIds.has(videoId);
-      }
-    );
-    
-    // SAFETY CHECK: If we would remove all videos and local playlist has no tracks with YouTube IDs, abort
-    if (videosToRemove.length === currentVideos.length && playlist.tracks.every((t: any) => !t.youtubeId)) {
-      console.log('WARNING: Would remove all videos from YouTube playlist but no local tracks have YouTube IDs.');
-      console.log('Will attempt to search for and add tracks to YouTube instead of aborting...');
-      
-      // Instead of aborting, we'll force a search for tracks
-      let searchSuccessCount = 0;
-      let searchFailCount = 0;
-      
-      // Process each track and search for YouTube videos
-      console.log(`Searching YouTube for ${playlist.tracks.length} tracks...`);
-      
-      for (const track of playlist.tracks) {
-        const searchQuery = encodeURIComponent(`${track.artist} - ${track.title}`);
-        console.log(`Searching for: ${track.artist} - ${track.title}`);
-        
-        try {
-          const searchResponse = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=1`,
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`
-              }
-            }
-          );
-          
-          if (!searchResponse.ok) {
-            console.error('Failed to search YouTube:', await searchResponse.text());
-            searchFailCount++;
-            continue;
-          }
-          
-          const searchData = await searchResponse.json();
-          if (searchData.items && searchData.items.length > 0) {
-            const videoId = searchData.items[0].id?.videoId;
-            
-            if (videoId) {
-              console.log(`Found YouTube match: ${videoId} for "${track.title}"`);
-              
-              // Update the track with the found YouTube ID
-              track.youtubeId = videoId;
-              
-              // Save the updated track in the database
-              if (playlistDocument) {
-                try {
-                  await Playlist.updateOne(
-                    { _id: playlistDocument._id, "tracks._id": track._id },
-                    { $set: { "tracks.$.youtubeId": videoId } }
-                  );
-                } catch (error) {
-                  console.error(`Failed to update track with YouTube ID: ${error}`);
-                }
-              }
-              
-              // Add the track to the YouTube playlist
-              try {
-                const addResponse = await fetch(
-                  'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${accessToken}`,
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      snippet: {
-                        playlistId: youtubePlaylistId,
-                        resourceId: {
-                          kind: 'youtube#video',
-                          videoId: videoId
-                        }
-                      }
-                    })
-                  }
-                );
-                
-                if (addResponse.ok) {
-                  console.log(`Added track to YouTube playlist: ${track.title}`);
-                  searchSuccessCount++;
-                } else {
-                  console.error(`Failed to add video to YouTube playlist:`, await addResponse.text());
-                  searchFailCount++;
-                }
-              } catch (error) {
-                console.error(`Error adding video to YouTube playlist: ${error}`);
-                searchFailCount++;
-              }
-            } else {
-              console.log(`No video ID found for track: ${track.title}`);
-              searchFailCount++;
-            }
-          } else {
-            console.log(`No YouTube results found for: ${track.artist} - ${track.title}`);
-            searchFailCount++;
-          }
-        } catch (error) {
-          console.error(`Error searching YouTube: ${error}`);
-          searchFailCount++;
         }
         
-        // Add a small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      // Now that we've attempted to add all tracks, update the database with any YouTube IDs we found
-      if (playlistDocument && searchSuccessCount > 0) {
-        await Playlist.findByIdAndUpdate(
-          playlistDocument._id,
-          { $set: { tracks: playlist.tracks } }
-        );
-      }
-      
-      return {
-        status: 'success',
-        message: `Synced ${searchSuccessCount} tracks to YouTube (${searchFailCount} failed)`,
-        success: true,
-        youtubeUrl: `https://www.youtube.com/playlist?list=${youtubePlaylistId}`,
-        youtubePlaylistId,
-        added: searchSuccessCount
-      };
-    }
-    
-    // SAFETY CHECK: Don't remove more than 90% of the playlist at once
-    if (videosToRemove.length > 0 && currentVideos.length > 0 && 
-        (videosToRemove.length / currentVideos.length) > 0.9) {
-      console.log('WARNING: Would remove more than 90% of videos from YouTube playlist. Operation aborted.');
-      return {
-        status: 'warning',
-        message: 'Operation would remove more than 90% of videos from YouTube playlist. Sync was aborted to prevent data loss.',
-        youtubePlaylistId
-      };
-    }
-    
-    // NEW SAFETY CHECK: Don't remove videos if playlist was recently imported
-    // Check if the playlist was imported in the last 24 hours and has fewer tracks than YouTube
-    const youtubeDataItem = playlist.platformData?.find((p: any) => p.platform === 'youtube');
-    const isRecentlyImported = youtubeDataItem && 
-                              youtubeDataItem.lastSyncedAt && 
-                              new Date().getTime() - new Date(youtubeDataItem.lastSyncedAt).getTime() < 24 * 60 * 60 * 1000;
-    
-    const hasFewTracks = playlist.tracks.length < currentVideos.length;
-    
-    if (isRecentlyImported && hasFewTracks && videosToRemove.length > 0) {
-      console.log('WARNING: Playlist was recently imported and has fewer tracks than YouTube. Importing missing videos instead of removing them.');
-      
-      // Import missing videos from YouTube
-      const importedCount = await importMissingVideosFromYouTube(playlist, currentVideos, playlistDocument);
-      
-      return {
-        status: 'success',
-        message: `Playlist was recently imported. Imported ${importedCount} missing videos from YouTube.`,
-        youtubePlaylistId
-      };
-    }
-    
-    // Remove tracks from YouTube
-    for (const item of videosToRemove) {
-      try {
-        console.log(`Removing video ${item.contentDetails.videoId} from YouTube playlist`);
-        const removeResponse = await fetch(
-          `https://www.googleapis.com/youtube/v3/playlistItems?id=${item.id}`,
-          {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Bearer ${accessToken}`
-            }
-          }
-        );
-        
-        if (!removeResponse.ok) {
-          console.error(`Failed to remove video ${item.contentDetails.videoId}: ${removeResponse.statusText}`);
-        }
+        console.log(`Created new YouTube Music playlist with ID: ${youtubePlaylistId}`);
       } catch (error) {
-        console.error(`Error removing video ${item.contentDetails.videoId}:`, error);
+        console.error('Error creating YouTube playlist:', error);
+        throw new Error(`Failed to create YouTube playlist: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     }
     
-    // STEP 4: Add tracks from Musync to YouTube
-    console.log(`Processing ${playlist.tracks.length} tracks from Musync playlist`);
+    // Get existing tracks from the YouTube Music playlist
+    let existingTracks: any[] = [];
+    try {
+      if (ytmusic.type === 'direct' || ytmusic.type === 'fallback') {
+        const playlistItems = await ytmusic.getPlaylistItems(youtubePlaylistId);
+        existingTracks = playlistItems.tracks || [];
+      } else {
+        const playlist = await ytmusic.getPlaylist(youtubePlaylistId);
+        existingTracks = playlist.tracks || [];
+      }
+      
+      console.log(`Found ${existingTracks.length} existing tracks in YouTube Music playlist`);
+    } catch (error) {
+      console.error(`Error fetching existing tracks from playlist ${youtubePlaylistId}:`, error);
+      existingTracks = [];
+    }
+    
+    // Create a map of existing track IDs for efficient lookups
+    const existingTrackIds = new Map<string, boolean>();
+    existingTracks.forEach((track: any) => {
+      if (track.videoId) {
+        existingTrackIds.set(track.videoId, true);
+      }
+    });
+    
+    // Process tracks from the Musync playlist
+    console.log(`Processing ${playlist.tracks.length} tracks from Musync playlist...`);
     let addedCount = 0;
     
     for (const track of playlist.tracks) {
-      let videoId = track.youtubeId;
-      
-      // Skip if video ID already exists in YouTube playlist
-      if (videoId && youtubeVideoIds.has(videoId)) {
-        console.log(`Track already in YouTube playlist: ${track.title} - ${track.artist}`);
-        continue;
-      }
-      
-      // If no YouTube ID, search for the track on YouTube
-      if (!videoId) {
-        console.log(`Searching YouTube for: ${track.artist} - ${track.title}`);
-        try {
-          const searchQuery = encodeURIComponent(`${track.artist} - ${track.title}`);
-          const searchResponse = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=1`,
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`
-              }
-            }
-          );
-
-          if (!searchResponse.ok) {
-            console.error('Failed to search YouTube:', await searchResponse.text());
-            continue;
-          }
-
-          const searchData = await searchResponse.json();
-          if (searchData.items && searchData.items.length > 0) {
-            videoId = searchData.items[0].id?.videoId;
-            
-            if (videoId) {
-              console.log(`Found YouTube match: ${videoId} for "${track.title}"`);
-              
-              // Update the track with the found YouTube ID
-              track.youtubeId = videoId;
-              
-              // Save the updated track in the database immediately
-              if (playlistDocument) {
-                try {
-                  await Playlist.updateOne(
-                    { _id: playlistDocument._id, "tracks._id": track._id },
-                    { $set: { "tracks.$.youtubeId": videoId } }
-                  );
-                } catch (error) {
-                  console.error(`Failed to update track with YouTube ID: ${error}`);
-                }
-              }
-              
-              // Add the track to the YouTube playlist
-              try {
-                const addResponse = await fetch(
-                  'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${accessToken}`,
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      snippet: {
-                        playlistId: youtubePlaylistId,
-                        resourceId: {
-                          kind: 'youtube#video',
-                          videoId: videoId
-                        }
-                      }
-                    })
-                  }
-                );
-                
-                if (addResponse.ok) {
-                  console.log(`Added track to YouTube playlist: ${track.title}`);
-                  addedCount++;
-                } else {
-                  console.error(`Failed to add video to YouTube playlist:`, await addResponse.text());
-                }
-              } catch (addError) {
-                console.error('Error adding video to YouTube playlist:', addError);
-              }
-            }
-          } else {
-            console.log(`No YouTube match found for: ${track.artist} - ${track.title}`);
-          }
-        } catch (error) {
-          console.error('Error searching YouTube:', error);
+      try {
+        if (addedCount >= MAX_TRACKS_PER_SYNC) {
+          console.log(`Reached maximum tracks per sync (${MAX_TRACKS_PER_SYNC}). Stopping.`);
+          break;
         }
-      }
-      
-      // If we have a videoId but it's not in the playlist yet, add it
-      else if (videoId && !youtubeVideoIds.has(videoId)) {
-        try {
-          const addResponse = await fetch(
-            'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                snippet: {
-                  playlistId: youtubePlaylistId,
-                  resourceId: {
-                    kind: 'youtube#video',
-                    videoId: videoId
-                  }
-                }
-              })
-            }
-          );
-          
-          if (addResponse.ok) {
-            console.log(`Added existing track to YouTube playlist: ${track.title}`);
-            addedCount++;
-          } else {
-            console.error(`Failed to add existing video to YouTube playlist:`, await addResponse.text());
-          }
-        } catch (addError) {
-          console.error('Error adding existing video to YouTube playlist:', addError);
+        
+        // Skip tracks without titles
+        const title = track.title?.trim() || '';
+        const artist = track.artist?.trim() || '';
+        
+        if (!title) {
+          console.log('Skipping track with no title');
+          continue;
         }
+        
+        // Prepare search query, combining title and artist
+        const searchQuery = `${title} ${artist}`;
+        console.log(`Searching for "${searchQuery}" on YouTube Music`);
+        
+        // Search for the track on YouTube Music
+        const searchResults = await ytmusic.search(searchQuery, 'songs');
+        
+        if (!searchResults || searchResults.length === 0) {
+          console.log(`No results found for "${searchQuery}" on YouTube Music`);
+          continue;
+        }
+        
+        // Get the first result
+        const firstResult = searchResults[0];
+        const videoId = firstResult.videoId;
+        
+        if (!videoId) {
+          console.log(`No valid result found for "${searchQuery}" on YouTube Music`);
+          continue;
+        }
+        
+        // Use our improved duplicate detection
+        if (isTrackDuplicate(firstResult, existingTracks, title, artist)) {
+          console.log(`Track "${title} - ${artist}" already exists in YouTube Music playlist`);
+          continue;
+        }
+        
+        // Add the track to the playlist
+        console.log(`Adding "${title} - ${artist}" (${videoId}) to YouTube Music playlist`);
+        await ytmusic.addVideoToPlaylist(youtubePlaylistId, videoId);
+        console.log(`Added "${title} - ${artist}" to YouTube Music playlist`);
+        addedCount++;
+        
+        // Add a small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (error) {
+        console.error(`Error processing track "${track.title}":`, error);
       }
     }
     
-    if (addedCount > 0) {
-      console.log(`Added ${addedCount} new tracks to YouTube playlist`);
-      
-      // Save the updated tracks with YouTube IDs
-      if (playlistDocument) {
-        await Playlist.findByIdAndUpdate(
-          playlistDocument._id,
-          { $set: { tracks: playlist.tracks } }
-        );
-      } else {
-        await playlist.save();
-      }
+    // Update the playlist sync status
+    if (playlistDocument) {
+      await updateYouTubePlatformData(
+        playlistDocument, 
+        youtubePlaylistId, 
+        'synced'
+      );
     }
-
-    // Success return value with playlist URL
+    
+    // Return the result with YouTube Music URL
     return {
       status: 'success',
-      message: `Synchronized with YouTube successfully`,
+      message: createdPlaylist ? 
+        `Created YouTube Music playlist with ${addedCount} tracks` : 
+        `Updated YouTube Music playlist (${addedCount} tracks added)`,
       youtubePlaylistId,
-      success: true,
-      youtubeUrl: `https://www.youtube.com/playlist?list=${youtubePlaylistId}`
+      youtubeUrl: `https://music.youtube.com/playlist?list=${youtubePlaylistId}`
     };
   } catch (error) {
-    console.error('Error syncing with YouTube:', error);
+    console.error('Error syncing to YouTube Music:', error);
     
-    // Attempt to update playlist status to indicate error
-    try {
-      if (playlistDocument) {
-        const updatedPlatformData = playlistDocument.platformData.map((data: any) => {
-          if (data.platform === 'youtube') {
-            return {
-              ...data,
-              syncStatus: 'failed',
-              syncError: error instanceof Error ? error.message : 'Unknown error',
-              lastSyncedAt: new Date()
-            };
-          }
-          return data;
-        });
-        
-        await Playlist.findByIdAndUpdate(
-          playlistDocument._id,
-          { $set: { platformData: updatedPlatformData } }
+    // Update platform data with error if we have a document and playlist ID
+    if (playlistDocument && error instanceof Error) {
+      const youtubePlaylistId = playlistDocument.platformData?.find(
+        (p: any) => p.platform === 'youtube'
+      )?.id || '';
+      
+      if (youtubePlaylistId) {
+        await updateYouTubePlatformData(
+          playlistDocument, 
+          youtubePlaylistId, 
+          'failed',
+          error.message
         );
       }
-    } catch (updateError) {
-      console.error('Could not update playlist sync status:', updateError);
     }
     
-    return {
-      status: 'failed',
-      message: `Failed to sync with YouTube: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      success: false
-    };
+    throw error;
   }
 }
 
@@ -2667,5 +1978,400 @@ async function refreshSpotifyToken(refreshToken: string): Promise<{
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error'
     };
+  }
+}
+
+// Extract reusable function for platform data updates
+async function updateYouTubePlatformData(
+  playlistDocument: any, 
+  youtubePlaylistId: string, 
+  status: 'synced' | 'partial' | 'failed',
+  error?: string
+): Promise<void> {
+  if (!playlistDocument) return;
+  
+  try {
+    const youtubeDataIndex = playlistDocument.platformData.findIndex(
+      (data: any) => data.platform === 'youtube'
+    );
+    
+    const platformData: PlatformData = {
+      platform: 'youtube',
+      id: youtubePlaylistId,
+      syncStatus: status,
+      lastSyncedAt: new Date()
+    };
+    
+    if (error) {
+      platformData.syncError = error;
+    }
+    
+    if (youtubeDataIndex >= 0) {
+      playlistDocument.platformData[youtubeDataIndex] = {
+        ...playlistDocument.platformData[youtubeDataIndex],
+        ...platformData
+      };
+    } else {
+      playlistDocument.platformData.push(platformData);
+    }
+    
+    await Playlist.findByIdAndUpdate(
+      playlistDocument._id,
+      { $set: { platformData: playlistDocument.platformData } }
+    );
+    
+    logger.debug(`Updated playlist ${playlistDocument._id} with YouTube ID ${youtubePlaylistId}`);
+  } catch (updateError) {
+    logger.error('Failed to update playlist with YouTube data:', updateError);
+  }
+}
+
+// Add a new helper function to search YouTube Music specifically
+async function searchYouTubeMusicTrack(
+  ytmusic: any,
+  title: string,
+  artist: string
+): Promise<string | null> {
+  try {
+    const query = `${title} ${artist}`;
+    console.log(`Searching for track on YouTube Music: "${query}"`);
+    
+    // Search for the track using the library's search functionality
+    const searchResults = await ytmusic.search(query, 'songs');
+    
+    if (!searchResults || searchResults.length === 0) {
+      console.log(`No results found for "${query}" on YouTube Music`);
+      return null;
+    }
+    
+    // Get the first result (most relevant)
+    const firstResult = searchResults[0];
+    
+    if (!firstResult || !firstResult.videoId) {
+      console.log(`Invalid search result for "${query}"`);
+      return null;
+    }
+    
+    console.log(`Found track on YouTube Music: "${firstResult.title}" (${firstResult.videoId})`);
+    return firstResult.videoId;
+  } catch (error) {
+    console.error(`Error searching for track "${title} - ${artist}" on YouTube Music:`, error);
+    return null;
+  }
+}
+
+/**
+ * Initialize YouTube Music API client
+ * 
+ * @param accessToken - Google access token
+ * @returns YouTube Music API client instance
+ */
+async function initializeYouTubeMusicAPI(accessToken: string): Promise<any> {
+  try {
+    // Since the ytmusic-api library isn't working correctly with our implementation,
+    // let's directly use our fallback implementation which is already working
+    console.log('Using direct implementation for YouTube Music API');
+    
+    return {
+      type: 'direct',
+      accessToken,
+      async getPlaylist(id: string) {
+        const url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&id=${id}`;
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.items && data.items.length > 0) {
+            return {
+              id: data.items[0].id,
+              title: data.items[0].snippet.title,
+              description: data.items[0].snippet.description,
+              tracks: [] // We'll need to fetch these separately
+            };
+          }
+        }
+        
+        return null;
+      },
+      
+      async getPlaylistItems(playlistId: string) {
+        // IMPROVED: Get ALL items in the playlist with pagination, not just first 50
+        let allItems: any[] = [];
+        let nextPageToken: string | null = null;
+        
+        do {
+          const url = new URL(`https://www.googleapis.com/youtube/v3/playlistItems`);
+          url.searchParams.append('part', 'snippet,contentDetails');
+          url.searchParams.append('maxResults', '50');
+          url.searchParams.append('playlistId', playlistId);
+          
+          if (nextPageToken) {
+            url.searchParams.append('pageToken', nextPageToken);
+          }
+          
+          const response = await fetch(url.toString(), {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`
+            }
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            allItems = [...allItems, ...(data.items || [])];
+            nextPageToken = data.nextPageToken || null;
+          } else {
+            console.error(`Failed to get playlist items: ${await response.text()}`);
+            break;
+          }
+        } while (nextPageToken);
+        
+        return {
+          tracks: allItems.map((item: any) => ({
+            videoId: item.contentDetails.videoId,
+            title: item.snippet.title,
+            // Extract normalized title to help with matching
+            normalizedTitle: item.snippet.title.toLowerCase()
+              .replace(/\([^)]*\)/g, '') // Remove content in parentheses
+              .replace(/\[[^\]]*\]/g, '') // Remove content in brackets
+              .replace(/feat\.|ft\./gi, '')  // Remove feat. or ft.
+              .replace(/official|audio|video|music/gi, '') // Remove common terms
+              .trim()
+          }))
+        };
+      },
+      
+      // ADD MISSING FUNCTION: implement createPlaylist
+      async createPlaylist(title: string, description: string, privacy: string) {
+        console.log(`Creating YouTube playlist "${title}" with privacy "${privacy}"`);
+        
+        const url = 'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status';
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            snippet: {
+              title,
+              description,
+              tags: ['music', 'audio', 'youtube music', 'synced from musync']
+            },
+            status: {
+              privacyStatus: privacy.toLowerCase()
+            }
+          })
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Failed to create YouTube playlist: ${errorText}`);
+          throw new Error(`Failed to create YouTube playlist: ${response.status} - ${errorText}`);
+        }
+        
+        const data = await response.json();
+        console.log(`Successfully created YouTube playlist: ${data.id}`);
+        return {
+          id: data.id
+        };
+      },
+      
+      async search(query: string, filter: string) {
+        // Use music-optimized search
+        const url = new URL('https://www.googleapis.com/youtube/v3/search');
+        url.searchParams.append('part', 'snippet');
+        url.searchParams.append('q', query);
+        url.searchParams.append('type', 'video');
+        url.searchParams.append('videoCategoryId', '10'); // 10 is Music
+        url.searchParams.append('topicId', '/m/04rlf'); // Music topic
+        url.searchParams.append('maxResults', '5');
+        
+        const response = await fetch(url.toString(), {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          return data.items.map((item: any) => ({
+            videoId: item.id.videoId,
+            title: item.snippet.title,
+            // Add normalized title for better matching
+            normalizedTitle: item.snippet.title.toLowerCase()
+              .replace(/\([^)]*\)/g, '') // Remove content in parentheses
+              .replace(/\[[^\]]*\]/g, '') // Remove content in brackets
+              .replace(/feat\.|ft\./gi, '')  // Remove feat. or ft.
+              .replace(/official|audio|video|music/gi, '') // Remove common terms
+              .trim(),
+            artists: [{ name: item.snippet.channelTitle }]
+          }));
+        }
+        
+        return [];
+      },
+      
+      async addVideoToPlaylist(playlistId: string, videoId: string) {
+        console.log(`Adding video ${videoId} to playlist ${playlistId}`);
+        
+        const url = 'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet';
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            snippet: {
+              playlistId,
+              resourceId: {
+                kind: 'youtube#video',
+                videoId
+              }
+            }
+          })
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Failed to add video to playlist: ${errorText}`);
+          throw new Error(`Failed to add video to playlist: ${response.status} - ${errorText}`);
+        }
+        
+        return true;
+      }
+    };
+  } catch (error) {
+    console.error('Failed to initialize YouTube Music API:', error);
+    throw new Error('Failed to connect to YouTube Music. Please try again or reconnect your account.');
+  }
+}
+
+/**
+ * Improved function to check if a track is already in the playlist
+ * Uses both video ID and title matching for better duplicate detection
+ * 
+ * @param searchResult - The search result from YouTube API
+ * @param existingTracks - List of tracks already in the playlist
+ * @param title - The title of the track we're checking
+ * @param artist - The artist of the track we're checking
+ * @returns true if the track appears to be a duplicate
+ */
+function isTrackDuplicate(
+  searchResult: any, 
+  existingTracks: any[], 
+  title: string, 
+  artist: string
+): boolean {
+  // Check for exact videoId match first
+  if (existingTracks.some(track => track.videoId === searchResult.videoId)) {
+    console.log(`Found exact videoId match for "${title}"`);
+    return true;
+  }
+  
+  // Normalize the search result title
+  const searchTitle = searchResult.normalizedTitle || searchResult.title.toLowerCase()
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/feat\.|ft\./gi, '')
+    .replace(/official|audio|video|music/gi, '')
+    .trim();
+  
+  // Normalize our search query
+  const searchQuery = `${title} ${artist}`.toLowerCase()
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/feat\.|ft\./gi, '')
+    .replace(/official|audio|video|music/gi, '')
+    .trim();
+  
+  // Look for title similarity in existing tracks
+  for (const track of existingTracks) {
+    const existingTitle = track.normalizedTitle || track.title.toLowerCase()
+      .replace(/\([^)]*\)/g, '')
+      .replace(/\[[^\]]*\]/g, '')
+      .replace(/feat\.|ft\./gi, '')
+      .replace(/official|audio|video|music/gi, '')
+      .trim();
+    
+    // Check if titles are very similar
+    if (existingTitle.includes(searchTitle) || 
+        searchTitle.includes(existingTitle) ||
+        existingTitle.includes(searchQuery) ||
+        searchQuery.includes(existingTitle)) {
+      console.log(`Found title similarity match between "${existingTitle}" and "${searchTitle}"`);
+      return true;
+    }
+    
+    // Check for artist name in title
+    if (artist && (
+        existingTitle.includes(artist.toLowerCase()) || 
+        track.title.toLowerCase().includes(artist.toLowerCase())
+    )) {
+      const similarity = calculateStringSimilarity(existingTitle, searchTitle);
+      if (similarity > 0.6) { // 60% similar or more
+        console.log(`Found artist + title similarity match: ${similarity.toFixed(2)} between "${existingTitle}" and "${searchTitle}"`);
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Calculate similarity between two strings (0.0 to 1.0)
+ * 
+ * @param str1 - First string
+ * @param str2 - Second string
+ * @returns Similarity score between 0 and 1
+ */
+function calculateStringSimilarity(str1: string, str2: string): number {
+  const longer = str1.length > str2.length ? str1 : str2;
+  const shorter = str1.length > str2.length ? str2 : str1;
+  
+  if (longer.length === 0) {
+    return 1.0;
+  }
+  
+  // Count matching characters
+  let matches = 0;
+  for (let i = 0; i < shorter.length; i++) {
+    if (longer.includes(shorter[i])) {
+      matches++;
+    }
+  }
+  
+  return matches / longer.length;
+}
+
+/**
+ * Get all tracks in a YouTube Music playlist
+ * 
+ * @param ytmusic - YouTube Music API client
+ * @param playlistId - Playlist ID
+ * @returns Array of tracks
+ */
+async function getYouTubeMusicPlaylistTracks(
+  ytmusic: any,
+  playlistId: string
+): Promise<any[]> {
+  try {
+    if (ytmusic.type === 'direct' || ytmusic.type === 'fallback') {
+      // Use our fallback implementation
+      const playlistItems = await ytmusic.getPlaylistItems(playlistId);
+      return playlistItems.tracks || [];
+    }
+    
+    // Original library implementation
+    const playlist = await ytmusic.getPlaylist(playlistId);
+    return playlist.tracks || [];
+  } catch (error) {
+    console.error(`Error getting tracks from YouTube Music playlist ${playlistId}:`, error);
+    return [];
   }
 }
